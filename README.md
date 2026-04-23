@@ -16,6 +16,9 @@ NodeSeek / DeepFlood 私信**完整历史备份版**脚本。
 - 按联系人逐个拉取会话详情
 - 每条私信单独存档
 - 支持导出完整历史 JSON
+- 支持增量同步 / 全量同步
+- 支持本地 JSON 导入 / 导出
+- 内置基础重试和限速
 
 ## 支持站点
 
@@ -31,8 +34,11 @@ NodeSeek / DeepFlood 私信**完整历史备份版**脚本。
    - `https://www.nodeseek.com/notification`
    - `https://www.deepflood.com/notification`
 5. 从 Tampermonkey 菜单执行：
-   - `完整同步私信历史`
+   - `增量同步私信历史`
+   - `全量同步私信历史`
    - `导出完整历史 JSON`
+   - `导出会话摘要 JSON`
+   - `导入完整历史 JSON`
 
 ## 当前实现
 
@@ -40,14 +46,17 @@ NodeSeek / DeepFlood 私信**完整历史备份版**脚本。
 - 完整历史数据模型（`message_id` 主键）
 - `dialogs` + `messages` 双存储
 - 按聊天列表遍历并抓取 `/notification/message/with/{userId}`
+- 增量同步（根据会话最后时间跳过未变化对话）
 - 完整历史 JSON 导出
+- 会话摘要 JSON 导出
+- 本地 JSON 导入
+- 基础失败重试和限速
 
 待继续增强：
-- 增量同步优化
 - 自动上传 WebDAV / R2
 - UI 面板
-- 失败重试和更细的限速控制
 - 大数据量导出优化
+- 更细粒度的断点续跑
 
 ## 文件
 

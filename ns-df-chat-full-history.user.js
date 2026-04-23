@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NS-DF 私信完整历史备份版（草案）
 // @namespace    https://www.nodeseek.com/
-// @version      0.1.0
-// @description  按 message_id 保存完整私信历史，而不是只保留每个联系人最后一条
+// @version      0.2.0
+// @description  按 message_id 保存完整私信历史，支持增量同步、重试、导入导出
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
 // @match        https://www.deepflood.com/notification*
@@ -45,6 +45,37 @@
   const site = detectActiveSite();
   if (!site) return;
 
+  const Utils = {
+    sleep(ms) {
+      return new Promise((r) => setTimeout(r, ms));
+    },
+    async retry(fn, opts = {}) {
+      const retries = opts.retries ?? 3;
+      const baseDelay = opts.baseDelay ?? 800;
+      let lastErr;
+      for (let i = 0; i < retries; i++) {
+        try {
+          return await fn();
+        } catch (e) {
+          lastErr = e;
+          if (i < retries - 1) {
+            await this.sleep(baseDelay * (i + 1));
+          }
+        }
+      }
+      throw lastErr;
+    },
+    downloadJson(filename, payload) {
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+  };
+
   class APIClient {
     constructor(site) {
       this.site = site;
@@ -53,10 +84,11 @@
     }
 
     async request(url, options = {}) {
-      return new Promise((resolve, reject) => {
+      return Utils.retry(() => new Promise((resolve, reject) => {
         GM_xmlhttpRequest({
           method: options.method || 'GET',
           url,
+          timeout: options.timeout || 15000,
           headers: {
             Accept: 'application/json',
             Referer: this.referer,
@@ -77,7 +109,7 @@
           onerror: reject,
           ontimeout: () => reject(new Error('request timeout')),
         });
-      });
+      }), { retries: options.retries ?? 3, baseDelay: options.baseDelay ?? 1000 });
     }
 
     async getMessageList() {
@@ -94,7 +126,7 @@
       this.userId = userId;
       this.site = site;
       this.dbName = `${site.id}_chat_full_${userId}`;
-      this.version = 1;
+      this.version = 2;
       this.db = null;
     }
 
@@ -127,6 +159,10 @@
 
           if (!db.objectStoreNames.contains('metadata')) {
             db.createObjectStore('metadata', { keyPath: 'key' });
+          }
+
+          if (!db.objectStoreNames.contains('sync_state')) {
+            db.createObjectStore('sync_state', { keyPath: 'member_id' });
           }
         };
       });
@@ -162,6 +198,46 @@
       return new Promise((resolve, reject) => {
         const req = store.getAll();
         req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async getSyncState(memberId) {
+      const tx = this.tx(['sync_state']);
+      const store = tx.objectStore('sync_state');
+      return new Promise((resolve, reject) => {
+        const req = store.get(memberId);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async putSyncState(state) {
+      const tx = this.tx(['sync_state'], 'readwrite');
+      const store = tx.objectStore('sync_state');
+      return new Promise((resolve, reject) => {
+        const req = store.put(state);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async setMetadata(key, value) {
+      const tx = this.tx(['metadata'], 'readwrite');
+      const store = tx.objectStore('metadata');
+      return new Promise((resolve, reject) => {
+        const req = store.put({ key, value });
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async getMetadata(key) {
+      const tx = this.tx(['metadata']);
+      const store = tx.objectStore('metadata');
+      return new Promise((resolve, reject) => {
+        const req = store.get(key);
+        req.onsuccess = () => resolve(req.result?.value ?? null);
         req.onerror = () => reject(req.error);
       });
     }
@@ -211,7 +287,7 @@
     throw new Error('无法获取用户ID');
   }
 
-  async function syncAllHistory() {
+  async function syncAllHistory(mode = 'incremental') {
     const api = new APIClient(site);
     const currentUserId = await resolveCurrentUserId(api);
     const db = new ChatDB(currentUserId, site);
@@ -222,22 +298,32 @@
 
     let dialogCount = 0;
     let messageCount = 0;
+    let skippedDialogs = 0;
 
     for (const dialog of dialogs) {
       const memberId = dialog.member_id || dialog.uid || dialog.user_id || dialog.id;
       if (!memberId) continue;
       const memberName = dialog.member_name || dialog.username || dialog.name || String(memberId);
+      const listCreatedAt = dialog.created_at || dialog.updated_at || null;
+      const syncState = await db.getSyncState(memberId);
+
+      if (mode === 'incremental' && syncState?.last_seen_created_at && listCreatedAt && syncState.last_seen_created_at === listCreatedAt) {
+        skippedDialogs += 1;
+        continue;
+      }
 
       const detail = await api.getChatMessages(memberId);
       const msgArray = detail?.msgArray || detail?.data || [];
 
       let lastCreatedAt = null;
       let lastMessage = '';
+      let localWrites = 0;
       for (const raw of msgArray) {
         if (!raw?.message_id) continue;
         const msg = normalizeMessage(raw, currentUserId, memberId, memberName);
         await db.putMessage(msg);
         messageCount += 1;
+        localWrites += 1;
         if (!lastCreatedAt || (msg.created_at && msg.created_at > lastCreatedAt)) {
           lastCreatedAt = msg.created_at;
           lastMessage = msg.content;
@@ -251,12 +337,26 @@
         last_message: lastMessage,
         fetched_at: new Date().toISOString(),
       });
+      await db.putSyncState({
+        member_id: memberId,
+        last_seen_created_at: listCreatedAt || lastCreatedAt || null,
+        last_full_fetch_at: new Date().toISOString(),
+        last_message_count: localWrites,
+      });
       dialogCount += 1;
 
-      await new Promise((r) => setTimeout(r, 400));
+      await Utils.sleep(500);
     }
 
-    alert(`完整历史同步完成\n会话: ${dialogCount}\n消息写入: ${messageCount}`);
+    await db.setMetadata('last_sync_summary', {
+      mode,
+      synced_at: new Date().toISOString(),
+      dialogCount,
+      skippedDialogs,
+      messageCount,
+    });
+
+    alert(`同步完成\n模式: ${mode}\n抓取会话: ${dialogCount}\n跳过会话: ${skippedDialogs}\n消息写入: ${messageCount}`);
   }
 
   async function exportHistoryJson() {
@@ -265,32 +365,94 @@
     const db = new ChatDB(currentUserId, site);
     await db.init();
     const data = await db.exportAll();
+    const summary = await db.getMetadata('last_sync_summary');
 
     const payload = {
       metadata: {
         userId: currentUserId,
         siteId: site.id,
         exportTime: new Date().toISOString(),
-        version: '0.1.0',
+        version: '0.2.0',
         type: 'full-history',
+        lastSyncSummary: summary,
       },
       ...data,
     };
 
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${site.id}_chat_full_history_${currentUserId}_${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    Utils.downloadJson(`${site.id}_chat_full_history_${currentUserId}_${Date.now()}.json`, payload);
   }
 
-  GM_registerMenuCommand('完整同步私信历史', () => {
-    syncAllHistory().catch((e) => alert(`同步失败: ${e.message}`));
+  async function exportDialogsOnly() {
+    const api = new APIClient(site);
+    const currentUserId = await resolveCurrentUserId(api);
+    const db = new ChatDB(currentUserId, site);
+    await db.init();
+    const dialogs = await db.getAllDialogs();
+    Utils.downloadJson(`${site.id}_dialogs_${currentUserId}_${Date.now()}.json`, {
+      metadata: {
+        userId: currentUserId,
+        siteId: site.id,
+        exportTime: new Date().toISOString(),
+        version: '0.2.0',
+        type: 'dialogs-only',
+      },
+      dialogs,
+    });
+  }
+
+  async function importHistoryJson() {
+    const api = new APIClient(site);
+    const currentUserId = await resolveCurrentUserId(api);
+    const db = new ChatDB(currentUserId, site);
+    await db.init();
+
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      let importedMessages = 0;
+      let importedDialogs = 0;
+
+      for (const dialog of payload.dialogs || []) {
+        await db.putDialog(dialog);
+        importedDialogs += 1;
+      }
+      for (const msg of payload.messages || []) {
+        await db.putMessage(msg);
+        importedMessages += 1;
+      }
+      await db.setMetadata('last_import_summary', {
+        importedAt: new Date().toISOString(),
+        importedDialogs,
+        importedMessages,
+        sourceType: payload?.metadata?.type || 'unknown',
+      });
+      alert(`导入完成\n会话: ${importedDialogs}\n消息: ${importedMessages}`);
+    };
+    input.click();
+  }
+
+  GM_registerMenuCommand('增量同步私信历史', () => {
+    syncAllHistory('incremental').catch((e) => alert(`增量同步失败: ${e.message}`));
+  });
+
+  GM_registerMenuCommand('全量同步私信历史', () => {
+    syncAllHistory('full').catch((e) => alert(`全量同步失败: ${e.message}`));
   });
 
   GM_registerMenuCommand('导出完整历史 JSON', () => {
     exportHistoryJson().catch((e) => alert(`导出失败: ${e.message}`));
+  });
+
+  GM_registerMenuCommand('导出会话摘要 JSON', () => {
+    exportDialogsOnly().catch((e) => alert(`导出失败: ${e.message}`));
+  });
+
+  GM_registerMenuCommand('导入完整历史 JSON', () => {
+    importHistoryJson().catch((e) => alert(`导入失败: ${e.message}`));
   });
 })();
