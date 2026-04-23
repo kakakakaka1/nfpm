@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NS-DF 私信完整历史备份版（草案）
 // @namespace    https://www.nodeseek.com/
-// @version      0.2.0
-// @description  按 message_id 保存完整私信历史，支持增量同步、重试、导入导出
+// @version      0.3.0
+// @description  按 message_id 保存完整私信历史，支持断点续跑、搜索导出、WebDAV备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
 // @match        https://www.deepflood.com/notification*
@@ -74,6 +74,18 @@
       a.click();
       URL.revokeObjectURL(url);
     },
+    async pickFile(accept = 'application/json,.json') {
+      return new Promise((resolve) => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = accept;
+        input.onchange = () => resolve(input.files?.[0] || null);
+        input.click();
+      });
+    },
+    basicAuth(username, password) {
+      return `Basic ${btoa(`${username}:${password}`)}`;
+    },
   };
 
   class APIClient {
@@ -126,7 +138,7 @@
       this.userId = userId;
       this.site = site;
       this.dbName = `${site.id}_chat_full_${userId}`;
-      this.version = 2;
+      this.version = 3;
       this.db = null;
     }
 
@@ -163,6 +175,12 @@
 
           if (!db.objectStoreNames.contains('sync_state')) {
             db.createObjectStore('sync_state', { keyPath: 'member_id' });
+          }
+
+          if (!db.objectStoreNames.contains('search_cache')) {
+            const store = db.createObjectStore('search_cache', { keyPath: 'id', autoIncrement: true });
+            store.createIndex('keyword', 'keyword', { unique: false });
+            store.createIndex('created_at', 'created_at', { unique: false });
           }
         };
       });
@@ -255,6 +273,19 @@
       });
       return { dialogs, messages };
     }
+
+    async searchMessages(keyword, limit = 200) {
+      const all = await new Promise((resolve, reject) => {
+        const req = this.tx(['messages']).objectStore('messages').getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error);
+      });
+      const q = String(keyword || '').toLowerCase();
+      return all
+        .filter((m) => (m.content || '').toLowerCase().includes(q) || (m.member_name || '').toLowerCase().includes(q))
+        .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+        .slice(0, limit);
+    }
   }
 
   function normalizeMessage(raw, currentUserId, memberId, memberName) {
@@ -299,10 +330,21 @@
     let dialogCount = 0;
     let messageCount = 0;
     let skippedDialogs = 0;
+    const checkpoint = await db.getMetadata('resume_checkpoint');
+    let resumePassed = !checkpoint?.member_id;
 
     for (const dialog of dialogs) {
       const memberId = dialog.member_id || dialog.uid || dialog.user_id || dialog.id;
       if (!memberId) continue;
+      if (!resumePassed) {
+        if (String(memberId) === String(checkpoint.member_id)) {
+          resumePassed = true;
+        } else {
+          skippedDialogs += 1;
+          continue;
+        }
+      }
+
       const memberName = dialog.member_name || dialog.username || dialog.name || String(memberId);
       const listCreatedAt = dialog.created_at || dialog.updated_at || null;
       const syncState = await db.getSyncState(memberId);
@@ -312,6 +354,7 @@
         continue;
       }
 
+      await db.setMetadata('resume_checkpoint', { member_id: memberId, at: new Date().toISOString(), mode });
       const detail = await api.getChatMessages(memberId);
       const msgArray = detail?.msgArray || detail?.data || [];
 
@@ -355,6 +398,7 @@
       skippedDialogs,
       messageCount,
     });
+    await db.setMetadata('resume_checkpoint', null);
 
     alert(`同步完成\n模式: ${mode}\n抓取会话: ${dialogCount}\n跳过会话: ${skippedDialogs}\n消息写入: ${messageCount}`);
   }
@@ -372,7 +416,7 @@
         userId: currentUserId,
         siteId: site.id,
         exportTime: new Date().toISOString(),
-        version: '0.2.0',
+        version: '0.3.0',
         type: 'full-history',
         lastSyncSummary: summary,
       },
@@ -393,7 +437,7 @@
         userId: currentUserId,
         siteId: site.id,
         exportTime: new Date().toISOString(),
-        version: '0.2.0',
+        version: '0.3.0',
         type: 'dialogs-only',
       },
       dialogs,
@@ -406,34 +450,104 @@
     const db = new ChatDB(currentUserId, site);
     await db.init();
 
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'application/json,.json';
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      const text = await file.text();
-      const payload = JSON.parse(text);
-      let importedMessages = 0;
-      let importedDialogs = 0;
+    const file = await Utils.pickFile('application/json,.json');
+    if (!file) return;
+    const text = await file.text();
+    const payload = JSON.parse(text);
+    let importedMessages = 0;
+    let importedDialogs = 0;
 
-      for (const dialog of payload.dialogs || []) {
-        await db.putDialog(dialog);
-        importedDialogs += 1;
-      }
-      for (const msg of payload.messages || []) {
-        await db.putMessage(msg);
-        importedMessages += 1;
-      }
-      await db.setMetadata('last_import_summary', {
-        importedAt: new Date().toISOString(),
-        importedDialogs,
-        importedMessages,
-        sourceType: payload?.metadata?.type || 'unknown',
-      });
-      alert(`导入完成\n会话: ${importedDialogs}\n消息: ${importedMessages}`);
+    for (const dialog of payload.dialogs || []) {
+      await db.putDialog(dialog);
+      importedDialogs += 1;
+    }
+    for (const msg of payload.messages || []) {
+      await db.putMessage(msg);
+      importedMessages += 1;
+    }
+    await db.setMetadata('last_import_summary', {
+      importedAt: new Date().toISOString(),
+      importedDialogs,
+      importedMessages,
+      sourceType: payload?.metadata?.type || 'unknown',
+    });
+    alert(`导入完成\n会话: ${importedDialogs}\n消息: ${importedMessages}`);
+  }
+
+  async function searchAndExport() {
+    const api = new APIClient(site);
+    const currentUserId = await resolveCurrentUserId(api);
+    const db = new ChatDB(currentUserId, site);
+    await db.init();
+    const keyword = prompt('输入要搜索的关键词');
+    if (!keyword) return;
+    const results = await db.searchMessages(keyword, 500);
+    Utils.downloadJson(`${site.id}_search_${keyword}_${Date.now()}.json`, {
+      metadata: {
+        userId: currentUserId,
+        siteId: site.id,
+        exportTime: new Date().toISOString(),
+        version: '0.3.0',
+        type: 'search-results',
+        keyword,
+        count: results.length,
+      },
+      results,
+    });
+    alert(`搜索完成，命中 ${results.length} 条，已导出 JSON`);
+  }
+
+  async function configureWebDAV() {
+    const current = GM_getValue(`webdav_config_${site.id}`, null);
+    let cfg = current ? JSON.parse(current) : {};
+    cfg.serverUrl = prompt('WebDAV 服务器地址', cfg.serverUrl || '') || cfg.serverUrl || '';
+    cfg.username = prompt('WebDAV 用户名', cfg.username || '') || cfg.username || '';
+    cfg.password = prompt('WebDAV 密码', cfg.password || '') || cfg.password || '';
+    cfg.backupPath = prompt('备份路径', cfg.backupPath || '/ns_df_messages_backup/') || cfg.backupPath || '/ns_df_messages_backup/';
+    GM_setValue(`webdav_config_${site.id}`, JSON.stringify(cfg));
+    alert('WebDAV 配置已保存');
+  }
+
+  async function backupToWebDAV() {
+    const api = new APIClient(site);
+    const currentUserId = await resolveCurrentUserId(api);
+    const db = new ChatDB(currentUserId, site);
+    await db.init();
+    const cfgRaw = GM_getValue(`webdav_config_${site.id}`, null);
+    if (!cfgRaw) throw new Error('请先配置 WebDAV');
+    const cfg = JSON.parse(cfgRaw);
+    const data = await db.exportAll();
+    const payload = {
+      metadata: {
+        userId: currentUserId,
+        siteId: site.id,
+        exportTime: new Date().toISOString(),
+        version: '0.3.0',
+        type: 'full-history',
+      },
+      ...data,
     };
-    input.click();
+    const fileName = `${site.id}_chat_full_history_${currentUserId}_${Date.now()}.json`;
+    const path = `${cfg.backupPath.replace(/\/$/, '')}/${fileName}`;
+    const url = `${cfg.serverUrl.replace(/\/$/, '')}${path.startsWith('/') ? path : '/' + path}`;
+    await Utils.retry(() => new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'PUT',
+        url,
+        headers: {
+          Authorization: Utils.basicAuth(cfg.username, cfg.password),
+          'Content-Type': 'application/json',
+        },
+        data: JSON.stringify(payload),
+        onload: (resp) => {
+          if (resp.status >= 200 && resp.status < 300) resolve();
+          else reject(new Error(`WebDAV PUT failed: ${resp.status} ${resp.statusText}`));
+        },
+        onerror: reject,
+        ontimeout: () => reject(new Error('WebDAV timeout')),
+      });
+    }), { retries: 3, baseDelay: 1500 });
+    alert(`WebDAV 备份完成\n${url}`);
   }
 
   GM_registerMenuCommand('增量同步私信历史', () => {
@@ -454,5 +568,17 @@
 
   GM_registerMenuCommand('导入完整历史 JSON', () => {
     importHistoryJson().catch((e) => alert(`导入失败: ${e.message}`));
+  });
+
+  GM_registerMenuCommand('搜索并导出命中消息', () => {
+    searchAndExport().catch((e) => alert(`搜索失败: ${e.message}`));
+  });
+
+  GM_registerMenuCommand('配置 WebDAV', () => {
+    configureWebDAV().catch((e) => alert(`配置失败: ${e.message}`));
+  });
+
+  GM_registerMenuCommand('备份完整历史到 WebDAV', () => {
+    backupToWebDAV().catch((e) => alert(`WebDAV 备份失败: ${e.message}`));
   });
 })();
