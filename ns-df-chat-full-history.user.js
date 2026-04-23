@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         NS-DF 私信完整历史备份版（草案）
 // @namespace    https://www.nodeseek.com/
-// @version      0.3.0
-// @description  按 message_id 保存完整私信历史，支持断点续跑、搜索导出、WebDAV备份
+// @version      0.4.0
+// @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
 // @match        https://www.deepflood.com/notification*
@@ -497,6 +497,20 @@
     alert(`搜索完成，命中 ${results.length} 条，已导出 JSON`);
   }
 
+  function buildHistoryPayload(currentUserId, data, extra = {}) {
+    return {
+      metadata: {
+        userId: currentUserId,
+        siteId: site.id,
+        exportTime: new Date().toISOString(),
+        version: '0.4.0',
+        type: 'full-history',
+        ...extra,
+      },
+      ...data,
+    };
+  }
+
   async function configureWebDAV() {
     const current = GM_getValue(`webdav_config_${site.id}`, null);
     let cfg = current ? JSON.parse(current) : {};
@@ -508,6 +522,16 @@
     alert('WebDAV 配置已保存');
   }
 
+  async function configureR2() {
+    const current = GM_getValue(`r2_config_${site.id}`, null);
+    let cfg = current ? JSON.parse(current) : {};
+    cfg.workerUrl = prompt('R2 Worker URL', cfg.workerUrl || '') || cfg.workerUrl || '';
+    cfg.token = prompt('R2 Token / Bearer', cfg.token || '') || cfg.token || '';
+    cfg.prefix = prompt('R2 前缀路径', cfg.prefix || `${site.id}_chat_backup`) || cfg.prefix || `${site.id}_chat_backup`;
+    GM_setValue(`r2_config_${site.id}`, JSON.stringify(cfg));
+    alert('R2 配置已保存');
+  }
+
   async function backupToWebDAV() {
     const api = new APIClient(site);
     const currentUserId = await resolveCurrentUserId(api);
@@ -517,16 +541,7 @@
     if (!cfgRaw) throw new Error('请先配置 WebDAV');
     const cfg = JSON.parse(cfgRaw);
     const data = await db.exportAll();
-    const payload = {
-      metadata: {
-        userId: currentUserId,
-        siteId: site.id,
-        exportTime: new Date().toISOString(),
-        version: '0.3.0',
-        type: 'full-history',
-      },
-      ...data,
-    };
+    const payload = buildHistoryPayload(currentUserId, data);
     const fileName = `${site.id}_chat_full_history_${currentUserId}_${Date.now()}.json`;
     const path = `${cfg.backupPath.replace(/\/$/, '')}/${fileName}`;
     const url = `${cfg.serverUrl.replace(/\/$/, '')}${path.startsWith('/') ? path : '/' + path}`;
@@ -548,6 +563,98 @@
       });
     }), { retries: 3, baseDelay: 1500 });
     alert(`WebDAV 备份完成\n${url}`);
+  }
+
+  async function backupToR2() {
+    const api = new APIClient(site);
+    const currentUserId = await resolveCurrentUserId(api);
+    const db = new ChatDB(currentUserId, site);
+    await db.init();
+    const cfgRaw = GM_getValue(`r2_config_${site.id}`, null);
+    if (!cfgRaw) throw new Error('请先配置 R2');
+    const cfg = JSON.parse(cfgRaw);
+    const data = await db.exportAll();
+    const payload = buildHistoryPayload(currentUserId, data);
+    const fileName = `${cfg.prefix}/${site.id}_chat_full_history_${currentUserId}_${Date.now()}.json`;
+    await Utils.retry(() => new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'PUT',
+        url: cfg.workerUrl,
+        headers: {
+          Authorization: `Bearer ${cfg.token}`,
+          'Content-Type': 'application/json',
+          'X-Backup-Key': fileName,
+        },
+        data: JSON.stringify(payload),
+        onload: (resp) => {
+          if (resp.status >= 200 && resp.status < 300) resolve();
+          else reject(new Error(`R2 PUT failed: ${resp.status} ${resp.statusText}`));
+        },
+        onerror: reject,
+        ontimeout: () => reject(new Error('R2 timeout')),
+      });
+    }), { retries: 3, baseDelay: 1500 });
+    alert(`R2 备份完成\n${fileName}`);
+  }
+
+  async function exportHistoryJsonChunked() {
+    const api = new APIClient(site);
+    const currentUserId = await resolveCurrentUserId(api);
+    const db = new ChatDB(currentUserId, site);
+    await db.init();
+    const data = await db.exportAll();
+    const chunkSize = Number(prompt('每片消息条数', '5000') || '5000');
+    const dialogs = data.dialogs || [];
+    const messages = data.messages || [];
+    let part = 1;
+    for (let i = 0; i < messages.length; i += chunkSize) {
+      const chunk = messages.slice(i, i + chunkSize);
+      Utils.downloadJson(`${site.id}_chat_full_history_${currentUserId}_part${part}_${Date.now()}.json`, {
+        metadata: {
+          userId: currentUserId,
+          siteId: site.id,
+          exportTime: new Date().toISOString(),
+          version: '0.4.0',
+          type: 'full-history-chunk',
+          part,
+          chunkSize,
+          totalMessages: messages.length,
+        },
+        dialogs: part === 1 ? dialogs : [],
+        messages: chunk,
+      });
+      part += 1;
+      await Utils.sleep(300);
+    }
+    alert(`分片导出完成，共 ${part - 1} 片`);
+  }
+
+  function configureAutoBackup() {
+    const current = GM_getValue(`auto_backup_${site.id}`, null);
+    let cfg = current ? JSON.parse(current) : {};
+    cfg.enabled = confirm(`启用自动备份？\n当前: ${cfg.enabled ? '已启用' : '未启用'}`);
+    cfg.intervalMinutes = Number(prompt('自动备份间隔（分钟）', String(cfg.intervalMinutes || 120)) || (cfg.intervalMinutes || 120));
+    cfg.target = prompt('自动备份目标（webdav/r2）', cfg.target || 'webdav') || cfg.target || 'webdav';
+    cfg.updatedAt = new Date().toISOString();
+    GM_setValue(`auto_backup_${site.id}`, JSON.stringify(cfg));
+    alert('自动备份配置已保存（需保持页面打开，脚本才会定时执行）');
+  }
+
+  async function maybeRunAutoBackup() {
+    const raw = GM_getValue(`auto_backup_${site.id}`, null);
+    if (!raw) return;
+    const cfg = JSON.parse(raw);
+    if (!cfg.enabled) return;
+    const lastRun = GM_getValue(`auto_backup_last_run_${site.id}`, 0);
+    const now = Date.now();
+    if (now - lastRun < (cfg.intervalMinutes || 120) * 60 * 1000) return;
+    try {
+      if (cfg.target === 'r2') await backupToR2();
+      else await backupToWebDAV();
+      GM_setValue(`auto_backup_last_run_${site.id}`, now);
+    } catch (e) {
+      console.error('auto backup failed', e);
+    }
   }
 
   GM_registerMenuCommand('增量同步私信历史', () => {
@@ -581,4 +688,24 @@
   GM_registerMenuCommand('备份完整历史到 WebDAV', () => {
     backupToWebDAV().catch((e) => alert(`WebDAV 备份失败: ${e.message}`));
   });
+
+  GM_registerMenuCommand('配置 R2', () => {
+    configureR2().catch((e) => alert(`R2 配置失败: ${e.message}`));
+  });
+
+  GM_registerMenuCommand('备份完整历史到 R2', () => {
+    backupToR2().catch((e) => alert(`R2 备份失败: ${e.message}`));
+  });
+
+  GM_registerMenuCommand('分片导出完整历史 JSON', () => {
+    exportHistoryJsonChunked().catch((e) => alert(`分片导出失败: ${e.message}`));
+  });
+
+  GM_registerMenuCommand('配置自动定时备份', () => {
+    configureAutoBackup();
+  });
+
+  setTimeout(() => {
+    maybeRunAutoBackup();
+  }, 5000);
 })();
