@@ -36,6 +36,20 @@ NodeSeek / DeepFlood 私信备份助手。
 
 这版已经基本改成**页面内按钮操作**，不需要总去 Tampermonkey 菜单里点。
 
+### 页面截图
+
+#### 页面入口
+
+![页面入口](docs/screenshots/page-actions.jpg)
+
+#### 同步与备份设置
+
+![同步与备份设置](docs/screenshots/sync-settings-modal.jpg)
+
+#### 自动同步静默执行示意
+
+![自动同步静默执行示意](docs/screenshots/auto-sync-toast.jpg)
+
 进入私信列表页后，页面上会出现 3 个入口：
 
 1. `历史私信`
