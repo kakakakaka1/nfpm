@@ -2,27 +2,9 @@
 
 NodeSeek / DeepFlood 私信备份助手。
 
-## 这是什么
+## 使用方法
 
-这是一个 Tampermonkey 用户脚本，用来把 NodeSeek / DeepFlood 私信完整备份到浏览器本地，并支持导出、导入、WebDAV 备份、页面内查看历史记录。
-
-它的核心目标是解决原版 `likesrt/ns-df-chat-backup` 更偏“聊天列表快照”而不是“完整私信历史”的问题。
-
-这个版本改成了：
-
-- 以 `message_id` 为主键保存消息
-- 每条私信单独入库，不再被同联系人后来的消息覆盖
-- 支持完整历史同步
-- 支持页面内查看本地历史私信
-- 支持页面内配置 WebDAV 和自动增量同步
-- 支持完整历史 JSON 导出 / 导入
-
-## 支持站点
-
-- NodeSeek
-- DeepFlood
-
-## 安装
+### 安装
 
 1. 安装 Tampermonkey
 2. 新建脚本
@@ -32,23 +14,9 @@ NodeSeek / DeepFlood 私信备份助手。
    - `https://www.nodeseek.com/notification`
    - `https://www.deepflood.com/notification`
 
-## 现在怎么用
+### 页面入口
 
 这版已经基本改成**页面内按钮操作**，不需要总去 Tampermonkey 菜单里点。
-
-### 页面截图
-
-#### 页面入口
-
-![页面入口](docs/screenshots/page-actions.jpg)
-
-#### 同步与备份设置
-
-![同步与备份设置](docs/screenshots/sync-settings-modal.jpg)
-
-#### 自动同步静默执行示意
-
-![自动同步静默执行示意](docs/screenshots/auto-sync-toast.jpg)
 
 进入私信列表页后，页面上会出现 3 个入口：
 
@@ -143,6 +111,26 @@ NodeSeek / DeepFlood 私信备份助手。
 适合换浏览器、清空本地后恢复、迁移数据。
 
 ---
+
+## 这是什么
+
+这是一个 Tampermonkey 用户脚本，用来把 NodeSeek / DeepFlood 私信完整备份到浏览器本地，并支持导出、导入、WebDAV 备份、页面内查看历史记录。
+
+它的核心目标是解决原版 `likesrt/ns-df-chat-backup` 更偏“聊天列表快照”而不是“完整私信历史”的问题。
+
+这个版本改成了：
+
+- 以 `message_id` 为主键保存消息
+- 每条私信单独入库，不再被同联系人后来的消息覆盖
+- 支持完整历史同步
+- 支持页面内查看本地历史私信
+- 支持页面内配置 WebDAV 和自动增量同步
+- 支持完整历史 JSON 导出 / 导入
+
+## 支持站点
+
+- NodeSeek
+- DeepFlood
 
 ## 数据存到哪里
 
