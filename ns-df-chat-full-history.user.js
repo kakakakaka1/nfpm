@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NS-DF 私信完整历史备份版（草案）
 // @namespace    https://www.nodeseek.com/
-// @version      0.4.0
+// @version      0.4.1
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -532,6 +532,32 @@
     alert('R2 配置已保存');
   }
 
+  async function ensureWebDAVDirectory(cfg) {
+    const serverBase = cfg.serverUrl.replace(/\/$/, '');
+    const normalized = (cfg.backupPath || '/').replace(/\/+$/, '');
+    const segments = normalized.split('/').filter(Boolean);
+    let current = '';
+    for (const seg of segments) {
+      current += '/' + seg;
+      const url = `${serverBase}${current}/`;
+      await new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: 'MKCOL',
+          url,
+          headers: {
+            Authorization: Utils.basicAuth(cfg.username, cfg.password),
+          },
+          onload: (resp) => {
+            if ((resp.status >= 200 && resp.status < 300) || resp.status === 405) resolve();
+            else reject(new Error(`WebDAV MKCOL failed: ${resp.status} ${resp.statusText}`));
+          },
+          onerror: reject,
+          ontimeout: () => reject(new Error('WebDAV MKCOL timeout')),
+        });
+      });
+    }
+  }
+
   async function backupToWebDAV() {
     const api = new APIClient(site);
     const currentUserId = await resolveCurrentUserId(api);
@@ -540,6 +566,7 @@
     const cfgRaw = GM_getValue(`webdav_config_${site.id}`, null);
     if (!cfgRaw) throw new Error('请先配置 WebDAV');
     const cfg = JSON.parse(cfgRaw);
+    await ensureWebDAVDirectory(cfg);
     const data = await db.exportAll();
     const payload = buildHistoryPayload(currentUserId, data);
     const fileName = `${site.id}_chat_full_history_${currentUserId}_${Date.now()}.json`;
