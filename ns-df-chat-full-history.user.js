@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NodeSeek / DeepFlood 私信备份助手
 // @namespace    https://www.nodeseek.com/
-// @version      0.5.7
+// @version      0.5.8
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -383,7 +383,7 @@
     throw new Error('无法获取用户ID');
   }
 
-  async function syncAllHistory(mode = 'incremental') {
+  async function syncAllHistory(mode = 'incremental', options = {}) {
     const api = new APIClient(site);
     const currentUserId = await resolveCurrentUserId(api);
     const db = new ChatDB(currentUserId, site);
@@ -469,7 +469,18 @@
     });
     await db.setMetadata('resume_checkpoint', null);
 
-    alert(`同步完成\n模式: ${mode}\n抓取会话: ${dialogCount}\n跳过会话: ${skippedDialogs}\n消息写入: ${messageCount}`);
+    const summaryText = `同步完成\n模式: ${mode}\n抓取会话: ${dialogCount}\n跳过会话: ${skippedDialogs}\n消息写入: ${messageCount}`;
+    if (!options.silent) {
+      alert(summaryText);
+    }
+    return {
+      mode,
+      dialogCount,
+      skippedDialogs,
+      messageCount,
+      synced_at: new Date().toISOString(),
+      summaryText,
+    };
   }
 
   async function exportHistoryJson() {
@@ -646,6 +657,11 @@
     const webdavCfg = currentWebDAV ? JSON.parse(currentWebDAV) : {};
     const currentAuto = GM_getValue(`auto_backup_${site.id}`, null);
     const autoCfg = currentAuto ? JSON.parse(currentAuto) : {};
+    const api = new APIClient(site);
+    const currentUserId = await resolveCurrentUserId(api);
+    const db = new ChatDB(currentUserId, site);
+    await db.init();
+    const lastSync = await db.getMetadata('last_sync_summary');
 
     return new Promise((resolve) => {
       const old = document.getElementById('nsdf-webdav-modal');
@@ -718,6 +734,18 @@
                 <label>最短触发间隔（分钟）</label>
                 <input data-role="intervalMinutes" type="number" min="1" step="1" value="${Number(autoCfg.intervalMinutes || 30)}">
               </div>
+              <div class="nsdf-webdav-field">
+                <label>最近一次同步记录</label>
+                <div class="nsdf-webdav-inline" style="display:block;line-height:1.7">
+                  ${lastSync ? `
+                    <div>时间：${new Date(lastSync.synced_at || '').toLocaleString()}</div>
+                    <div>模式：${lastSync.mode || '-'}</div>
+                    <div>抓取会话：${lastSync.dialogCount ?? 0}</div>
+                    <div>跳过会话：${lastSync.skippedDialogs ?? 0}</div>
+                    <div>消息写入：${lastSync.messageCount ?? 0}</div>
+                  ` : '<div>暂无同步记录</div>'}
+                </div>
+              </div>
             </div>
           </div>
           <div class="nsdf-webdav-actions">
@@ -773,7 +801,7 @@
     if (now - lastRun < (cfg.intervalMinutes || 30) * 60 * 1000) return;
     try {
       console.log('[ns-df-chat-full-history] auto incremental sync start');
-      await syncAllHistory('incremental');
+      await syncAllHistory('incremental', { silent: true });
       GM_setValue(`auto_backup_last_run_${site.id}`, Date.now());
       console.log('[ns-df-chat-full-history] auto incremental sync done');
     } catch (e) {
