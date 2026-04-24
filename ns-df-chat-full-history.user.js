@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NS-DF 私信完整历史备份版（草案）
 // @namespace    https://www.nodeseek.com/
-// @version      0.4.2
+// @version      0.4.3
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -311,6 +311,29 @@
     return [];
   }
 
+  function resolveDialogPeer(dialog, currentUserId) {
+    const senderId = dialog.sender_id ?? dialog.senderId ?? dialog.from_uid ?? dialog.fromUid;
+    const receiverId = dialog.receiver_id ?? dialog.receiverId ?? dialog.to_uid ?? dialog.toUid;
+
+    if (senderId === currentUserId) {
+      return {
+        memberId: receiverId,
+        memberName: dialog.receiver_name || dialog.receiverName || String(receiverId),
+      };
+    }
+    if (receiverId === currentUserId) {
+      return {
+        memberId: senderId,
+        memberName: dialog.sender_name || dialog.senderName || String(senderId),
+      };
+    }
+
+    return {
+      memberId: dialog.member_id || dialog.uid || dialog.user_id || dialog.id || senderId || receiverId,
+      memberName: dialog.member_name || dialog.username || dialog.name || dialog.sender_name || dialog.receiver_name || '',
+    };
+  }
+
   function normalizeMessage(raw, currentUserId, memberId, memberName) {
     const senderId = raw.sender_id ?? raw.senderId ?? raw.from_uid ?? raw.fromUid;
     const receiverId = raw.receiver_id ?? raw.receiverId ?? raw.to_uid ?? raw.toUid;
@@ -360,7 +383,8 @@
     let resumePassed = !checkpoint?.member_id;
 
     for (const dialog of dialogs) {
-      const memberId = dialog.member_id || dialog.uid || dialog.user_id || dialog.id;
+      const peer = resolveDialogPeer(dialog, currentUserId);
+      const memberId = peer.memberId;
       if (!memberId) continue;
       if (!resumePassed) {
         if (String(memberId) === String(checkpoint.member_id)) {
@@ -371,7 +395,7 @@
         }
       }
 
-      const memberName = dialog.member_name || dialog.username || dialog.name || String(memberId);
+      const memberName = peer.memberName || String(memberId);
       const listCreatedAt = dialog.created_at || dialog.updated_at || null;
       const syncState = await db.getSyncState(memberId);
 
