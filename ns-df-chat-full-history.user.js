@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NS-DF 私信完整历史备份版（草案）
 // @namespace    https://www.nodeseek.com/
-// @version      0.4.7
+// @version      0.5.1
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -216,6 +216,22 @@
       return new Promise((resolve, reject) => {
         const req = store.getAll();
         req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async getMessagesByMemberId(memberId, limit = 500) {
+      const tx = this.tx(['messages']);
+      const store = tx.objectStore('messages');
+      const index = store.index('member_id');
+      return new Promise((resolve, reject) => {
+        const req = index.getAll(IDBKeyRange.only(memberId));
+        req.onsuccess = () => {
+          const rows = (req.result || [])
+            .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
+            .slice(-limit);
+          resolve(rows);
+        };
         req.onerror = () => reject(req.error);
       });
     }
@@ -598,7 +614,11 @@
     const currentUserId = await resolveCurrentUserId(api);
     const db = new ChatDB(currentUserId, site);
     await db.init();
-    const cfgRaw = GM_getValue(`webdav_config_${site.id}`, null);
+    let cfgRaw = GM_getValue(`webdav_config_${site.id}`, null);
+    if (!cfgRaw) {
+      await configureWebDAV();
+      cfgRaw = GM_getValue(`webdav_config_${site.id}`, null);
+    }
     if (!cfgRaw) throw new Error('请先配置 WebDAV');
     const cfg = JSON.parse(cfgRaw);
     await ensureWebDAVDirectory(cfg);
@@ -627,79 +647,14 @@
     alert(`WebDAV 备份完成\n${url}`);
   }
 
-  async function backupToR2() {
-    const api = new APIClient(site);
-    const currentUserId = await resolveCurrentUserId(api);
-    const db = new ChatDB(currentUserId, site);
-    await db.init();
-    const cfgRaw = GM_getValue(`r2_config_${site.id}`, null);
-    if (!cfgRaw) throw new Error('请先配置 R2');
-    const cfg = JSON.parse(cfgRaw);
-    const data = await db.exportAll();
-    const payload = buildHistoryPayload(currentUserId, data);
-    const fileName = `${cfg.prefix}/${site.id}_chat_full_history_${currentUserId}_${Date.now()}.json`;
-    await Utils.retry(() => new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: 'PUT',
-        url: cfg.workerUrl,
-        headers: {
-          Authorization: `Bearer ${cfg.token}`,
-          'Content-Type': 'application/json',
-          'X-Backup-Key': fileName,
-        },
-        data: JSON.stringify(payload),
-        onload: (resp) => {
-          if (resp.status >= 200 && resp.status < 300) resolve();
-          else reject(new Error(`R2 PUT failed: ${resp.status} ${resp.statusText}`));
-        },
-        onerror: reject,
-        ontimeout: () => reject(new Error('R2 timeout')),
-      });
-    }), { retries: 3, baseDelay: 1500 });
-    alert(`R2 备份完成\n${fileName}`);
-  }
-
-  async function exportHistoryJsonChunked() {
-    const api = new APIClient(site);
-    const currentUserId = await resolveCurrentUserId(api);
-    const db = new ChatDB(currentUserId, site);
-    await db.init();
-    const data = await db.exportAll();
-    const chunkSize = Number(prompt('每片消息条数', '5000') || '5000');
-    const dialogs = data.dialogs || [];
-    const messages = data.messages || [];
-    let part = 1;
-    for (let i = 0; i < messages.length; i += chunkSize) {
-      const chunk = messages.slice(i, i + chunkSize);
-      Utils.downloadJson(`${site.id}_chat_full_history_${currentUserId}_part${part}_${Date.now()}.json`, {
-        metadata: {
-          userId: currentUserId,
-          siteId: site.id,
-          exportTime: new Date().toISOString(),
-          version: '0.4.0',
-          type: 'full-history-chunk',
-          part,
-          chunkSize,
-          totalMessages: messages.length,
-        },
-        dialogs: part === 1 ? dialogs : [],
-        messages: chunk,
-      });
-      part += 1;
-      await Utils.sleep(300);
-    }
-    alert(`分片导出完成，共 ${part - 1} 片`);
-  }
-
   function configureAutoBackup() {
     const current = GM_getValue(`auto_backup_${site.id}`, null);
     let cfg = current ? JSON.parse(current) : {};
-    cfg.enabled = confirm(`启用自动备份？\n当前: ${cfg.enabled ? '已启用' : '未启用'}`);
-    cfg.intervalMinutes = Number(prompt('自动备份间隔（分钟）', String(cfg.intervalMinutes || 120)) || (cfg.intervalMinutes || 120));
-    cfg.target = prompt('自动备份目标（webdav/r2）', cfg.target || 'webdav') || cfg.target || 'webdav';
+    cfg.enabled = confirm(`启用打开私信页后自动增量同步？\n当前: ${cfg.enabled ? '已启用' : '未启用'}`);
+    cfg.intervalMinutes = Number(prompt('最短触发间隔（分钟）', String(cfg.intervalMinutes || 30)) || (cfg.intervalMinutes || 30));
     cfg.updatedAt = new Date().toISOString();
     GM_setValue(`auto_backup_${site.id}`, JSON.stringify(cfg));
-    alert('自动备份配置已保存（需保持页面打开，脚本才会定时执行）');
+    alert('自动增量同步配置已保存（打开私信页时按间隔自动触发）');
   }
 
   async function maybeRunAutoBackup() {
@@ -709,14 +664,183 @@
     if (!cfg.enabled) return;
     const lastRun = GM_getValue(`auto_backup_last_run_${site.id}`, 0);
     const now = Date.now();
-    if (now - lastRun < (cfg.intervalMinutes || 120) * 60 * 1000) return;
+    if (now - lastRun < (cfg.intervalMinutes || 30) * 60 * 1000) return;
     try {
-      if (cfg.target === 'r2') await backupToR2();
-      else await backupToWebDAV();
-      GM_setValue(`auto_backup_last_run_${site.id}`, now);
+      console.log('[ns-df-chat-full-history] auto incremental sync start');
+      await syncAllHistory('incremental');
+      GM_setValue(`auto_backup_last_run_${site.id}`, Date.now());
+      console.log('[ns-df-chat-full-history] auto incremental sync done');
     } catch (e) {
-      console.error('auto backup failed', e);
+      console.error('auto incremental sync failed', e);
     }
+  }
+
+  async function openHistoryPanel() {
+    const api = new APIClient(site);
+    const currentUserId = await resolveCurrentUserId(api);
+    const db = new ChatDB(currentUserId, site);
+    await db.init();
+
+    const existing = document.getElementById('nsdf-history-panel-root');
+    if (existing) {
+      existing.style.display = existing.style.display === 'none' ? 'flex' : 'none';
+      return;
+    }
+
+    const style = document.createElement('style');
+    style.id = 'nsdf-history-panel-style';
+    style.textContent = `
+      #nsdf-history-panel-root{position:fixed;top:72px;right:16px;width:960px;height:78vh;z-index:999999;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.35);display:flex;overflow:hidden;font-size:14px}
+      #nsdf-history-panel-root *{box-sizing:border-box}
+      .nsdf-sidebar{width:320px;border-right:1px solid #374151;display:flex;flex-direction:column;background:#0f172a}
+      .nsdf-main{flex:1;display:flex;flex-direction:column;background:#111827}
+      .nsdf-header{padding:12px;border-bottom:1px solid #374151;display:flex;gap:8px;align-items:center}
+      .nsdf-title{font-weight:700;font-size:15px;flex:1}
+      .nsdf-btn{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:8px 10px;cursor:pointer}
+      .nsdf-btn.secondary{background:#374151}
+      .nsdf-input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #374151;background:#1f2937;color:#fff;outline:none}
+      .nsdf-list,.nsdf-messages,.nsdf-search-results{overflow:auto}
+      .nsdf-list{padding:8px;display:flex;flex-direction:column;gap:8px}
+      .nsdf-item{padding:10px;border:1px solid #374151;border-radius:10px;background:#111827;cursor:pointer}
+      .nsdf-item:hover,.nsdf-item.active{border-color:#60a5fa;background:#172033}
+      .nsdf-name{font-weight:700;margin-bottom:4px}
+      .nsdf-meta,.nsdf-preview{font-size:12px;color:#9ca3af;line-height:1.4}
+      .nsdf-messages{padding:12px;display:flex;flex-direction:column;gap:10px}
+      .nsdf-msg{max-width:80%;padding:10px 12px;border-radius:12px;line-height:1.45;white-space:pre-wrap;word-break:break-word}
+      .nsdf-msg.in{background:#1f2937;align-self:flex-start}
+      .nsdf-msg.out{background:#1d4ed8;align-self:flex-end}
+      .nsdf-msg-time{font-size:11px;opacity:.75;margin-top:6px}
+      .nsdf-empty{padding:24px;color:#9ca3af}
+      .nsdf-search-results{padding:10px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid #374151;max-height:220px}
+      .nsdf-search-item{padding:10px;border:1px solid #374151;border-radius:10px;background:#0b1220;cursor:pointer}
+      .nsdf-search-item:hover{border-color:#60a5fa}
+      .nsdf-toolbar{padding:10px 12px;border-bottom:1px solid #374151;display:flex;gap:8px}
+    `;
+    document.head.appendChild(style);
+
+    const root = document.createElement('div');
+    root.id = 'nsdf-history-panel-root';
+    root.innerHTML = `
+      <div class="nsdf-sidebar">
+        <div class="nsdf-header">
+          <div class="nsdf-title">私信备份</div>
+          <button class="nsdf-btn secondary" data-act="refresh">刷新</button>
+          <button class="nsdf-btn secondary" data-act="close">关闭</button>
+        </div>
+        <div class="nsdf-toolbar"><input class="nsdf-input" data-role="dialog-search" placeholder="筛选联系人 / 搜最后一条"></div>
+        <div class="nsdf-list" data-role="dialog-list"></div>
+      </div>
+      <div class="nsdf-main">
+        <div class="nsdf-header">
+          <div class="nsdf-title" data-role="current-title">选择一个会话</div>
+        </div>
+        <div class="nsdf-toolbar"><input class="nsdf-input" data-role="keyword-search" placeholder="搜索私信关键词，回车搜索"></div>
+        <div class="nsdf-search-results" data-role="search-results" style="display:none"></div>
+        <div class="nsdf-messages" data-role="message-list"><div class="nsdf-empty">还没选会话。</div></div>
+      </div>
+    `;
+    document.body.appendChild(root);
+
+    const dialogListEl = root.querySelector('[data-role="dialog-list"]');
+    const messageListEl = root.querySelector('[data-role="message-list"]');
+    const currentTitleEl = root.querySelector('[data-role="current-title"]');
+    const dialogSearchEl = root.querySelector('[data-role="dialog-search"]');
+    const keywordSearchEl = root.querySelector('[data-role="keyword-search"]');
+    const searchResultsEl = root.querySelector('[data-role="search-results"]');
+
+    let dialogsCache = [];
+    let activeMemberId = null;
+
+    function formatTime(v) {
+      if (!v) return '-';
+      const d = new Date(v);
+      if (Number.isNaN(d.getTime())) return String(v);
+      return d.toLocaleString();
+    }
+
+    async function renderDialogs(filter = '') {
+      const q = String(filter || '').toLowerCase();
+      const dialogs = dialogsCache
+        .filter((d) => !q || String(d.member_name || '').toLowerCase().includes(q) || String(d.last_message || '').toLowerCase().includes(q))
+        .sort((a, b) => String(b.last_created_at || '').localeCompare(String(a.last_created_at || '')));
+      dialogListEl.innerHTML = dialogs.length ? '' : '<div class="nsdf-empty">还没有本地会话数据，先同步一次。</div>';
+      for (const d of dialogs) {
+        const item = document.createElement('div');
+        item.className = `nsdf-item${String(d.member_id) === String(activeMemberId) ? ' active' : ''}`;
+        item.innerHTML = `
+          <div class="nsdf-name">${d.member_name || d.member_id}</div>
+          <div class="nsdf-meta">${formatTime(d.last_created_at)}</div>
+          <div class="nsdf-preview">${(d.last_message || '').slice(0, 80)}</div>
+        `;
+        item.onclick = async () => {
+          activeMemberId = d.member_id;
+          currentTitleEl.textContent = `${d.member_name || d.member_id} (${d.member_id})`;
+          await renderDialogs(dialogSearchEl.value);
+          await renderMessages(d.member_id);
+          searchResultsEl.style.display = 'none';
+        };
+        dialogListEl.appendChild(item);
+      }
+    }
+
+    async function renderMessages(memberId) {
+      const rows = await db.getMessagesByMemberId(memberId, 1000);
+      messageListEl.innerHTML = rows.length ? '' : '<div class="nsdf-empty">这个会话还没有消息。</div>';
+      for (const m of rows) {
+        const node = document.createElement('div');
+        node.className = `nsdf-msg ${m.direction === 'out' ? 'out' : 'in'}`;
+        node.innerHTML = `${(m.content || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}<div class="nsdf-msg-time">${formatTime(m.created_at)}</div>`;
+        messageListEl.appendChild(node);
+      }
+      messageListEl.scrollTop = messageListEl.scrollHeight;
+    }
+
+    async function refreshAll() {
+      dialogsCache = await db.getAllDialogs();
+      await renderDialogs(dialogSearchEl.value);
+      if (activeMemberId) await renderMessages(activeMemberId);
+    }
+
+    dialogSearchEl.addEventListener('input', () => {
+      renderDialogs(dialogSearchEl.value);
+    });
+
+    keywordSearchEl.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Enter') return;
+      const keyword = keywordSearchEl.value.trim();
+      if (!keyword) {
+        searchResultsEl.style.display = 'none';
+        return;
+      }
+      const results = await db.searchMessages(keyword, 200);
+      searchResultsEl.innerHTML = results.length ? '' : '<div class="nsdf-empty">没搜到。</div>';
+      searchResultsEl.style.display = 'flex';
+      for (const row of results) {
+        const item = document.createElement('div');
+        item.className = 'nsdf-search-item';
+        item.innerHTML = `
+          <div class="nsdf-name">${row.member_name || row.member_id}</div>
+          <div class="nsdf-meta">${formatTime(row.created_at)}</div>
+          <div class="nsdf-preview">${(row.content || '').slice(0, 120)}</div>
+        `;
+        item.onclick = async () => {
+          activeMemberId = row.member_id;
+          currentTitleEl.textContent = `${row.member_name || row.member_id} (${row.member_id})`;
+          await renderDialogs(dialogSearchEl.value);
+          await renderMessages(row.member_id);
+        };
+        searchResultsEl.appendChild(item);
+      }
+    });
+
+    root.querySelector('[data-act="close"]').onclick = () => {
+      root.style.display = 'none';
+    };
+    root.querySelector('[data-act="refresh"]').onclick = () => {
+      refreshAll().catch((e) => alert(`刷新面板失败: ${e.message}`));
+    };
+
+    await refreshAll();
   }
 
   GM_registerMenuCommand('增量同步私信历史', () => {
@@ -739,27 +863,15 @@
     searchAndExport().catch((e) => alert(`搜索失败: ${e.message}`));
   });
 
-  GM_registerMenuCommand('配置 WebDAV', () => {
-    configureWebDAV().catch((e) => alert(`配置失败: ${e.message}`));
-  });
-
   GM_registerMenuCommand('备份完整历史到 WebDAV', () => {
     backupToWebDAV().catch((e) => alert(`WebDAV 备份失败: ${e.message}`));
   });
 
-  GM_registerMenuCommand('配置 R2', () => {
-    configureR2().catch((e) => alert(`R2 配置失败: ${e.message}`));
+  GM_registerMenuCommand('打开私信备份面板', () => {
+    openHistoryPanel().catch((e) => alert(`打开面板失败: ${e.message}`));
   });
 
-  GM_registerMenuCommand('备份完整历史到 R2', () => {
-    backupToR2().catch((e) => alert(`R2 备份失败: ${e.message}`));
-  });
-
-  GM_registerMenuCommand('分片导出完整历史 JSON', () => {
-    exportHistoryJsonChunked().catch((e) => alert(`分片导出失败: ${e.message}`));
-  });
-
-  GM_registerMenuCommand('配置自动定时备份', () => {
+  GM_registerMenuCommand('配置自动打开页面增量同步', () => {
     configureAutoBackup();
   });
 
