@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NodeSeek / DeepFlood 私信备份助手
 // @namespace    https://www.nodeseek.com/
-// @version      0.6.0
+// @version      0.6.1
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -1074,7 +1074,6 @@
           <button class="nsdf-tools-item" data-act="sync-full">全量同步私信历史</button>
           <button class="nsdf-tools-item" data-act="export">导出完整历史 JSON</button>
           <button class="nsdf-tools-item" data-act="import">导入完整历史 JSON</button>
-          <button class="nsdf-tools-item" data-act="search-export">搜索并导出命中消息</button>
         </div>
         <button class="nsdf-tools-close" data-act="close">关闭</button>
       </div>
@@ -1095,9 +1094,6 @@
     };
     modal.querySelector('[data-act="import"]').onclick = async () => {
       try { await importHistoryJson(); close(); } catch (e) { alert(`导入失败: ${e.message}`); }
-    };
-    modal.querySelector('[data-act="search-export"]').onclick = async () => {
-      try { await searchAndExport(); close(); } catch (e) { alert(`搜索失败: ${e.message}`); }
     };
   }
 
