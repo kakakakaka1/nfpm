@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NS-DF 私信完整历史备份版（草案）
 // @namespace    https://www.nodeseek.com/
-// @version      0.4.3
+// @version      0.4.4
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -785,12 +785,25 @@
     alert('已导出 message/list 原始调试 JSON');
   }
 
+  async function exportMessageWithDebug() {
+    const api = new APIClient(site);
+    const peerId = prompt('输入要调试的联系人 ID，例如 24544');
+    if (!peerId) return;
+    const detail = await api.getChatMessages(peerId);
+    Utils.downloadJson(`${site.id}_message_with_${peerId}_debug_${Date.now()}.json`, detail);
+    alert(`已导出 message/with/${peerId} 原始调试 JSON`);
+  }
+
   GM_registerMenuCommand('配置自动定时备份', () => {
     configureAutoBackup();
   });
 
   GM_registerMenuCommand('导出原始 message/list 调试 JSON', () => {
     exportDebugPayload().catch((e) => alert(`调试导出失败: ${e.message}`));
+  });
+
+  GM_registerMenuCommand('导出原始 message/with 调试 JSON', () => {
+    exportMessageWithDebug().catch((e) => alert(`详情调试导出失败: ${e.message}`));
   });
 
   setTimeout(() => {
