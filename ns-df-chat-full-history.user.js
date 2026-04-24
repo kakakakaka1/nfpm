@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         NS-DF 私信完整历史备份版（草案）
+// @name         NodeSeek / DeepFlood 私信备份助手
 // @namespace    https://www.nodeseek.com/
-// @version      0.5.1
+// @version      0.5.3
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -690,31 +690,50 @@
     const style = document.createElement('style');
     style.id = 'nsdf-history-panel-style';
     style.textContent = `
-      #nsdf-history-panel-root{position:fixed;top:72px;right:16px;width:960px;height:78vh;z-index:999999;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.35);display:flex;overflow:hidden;font-size:14px}
+      #nsdf-history-panel-root{position:fixed;top:64px;right:20px;width:min(1100px,calc(100vw - 40px));height:min(82vh,900px);z-index:999999;background:#f8fafc;color:#0f172a;border:1px solid rgba(148,163,184,.35);border-radius:18px;box-shadow:0 24px 80px rgba(15,23,42,.25);display:flex;overflow:hidden;font-size:14px;backdrop-filter:blur(10px)}
       #nsdf-history-panel-root *{box-sizing:border-box}
-      .nsdf-sidebar{width:320px;border-right:1px solid #374151;display:flex;flex-direction:column;background:#0f172a}
-      .nsdf-main{flex:1;display:flex;flex-direction:column;background:#111827}
-      .nsdf-header{padding:12px;border-bottom:1px solid #374151;display:flex;gap:8px;align-items:center}
-      .nsdf-title{font-weight:700;font-size:15px;flex:1}
-      .nsdf-btn{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:8px 10px;cursor:pointer}
-      .nsdf-btn.secondary{background:#374151}
-      .nsdf-input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #374151;background:#1f2937;color:#fff;outline:none}
+      .nsdf-sidebar{width:340px;border-right:1px solid #e2e8f0;display:flex;flex-direction:column;background:linear-gradient(180deg,#f8fafc 0%,#eef2ff 100%)}
+      .nsdf-main{flex:1;display:flex;flex-direction:column;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%)}
+      .nsdf-header{padding:14px 16px;border-bottom:1px solid #e2e8f0;display:flex;gap:8px;align-items:center;background:rgba(255,255,255,.72);backdrop-filter:blur(8px)}
+      .nsdf-title{font-weight:800;font-size:15px;flex:1}
+      .nsdf-btn{background:#2563eb;color:#fff;border:none;border-radius:10px;padding:8px 12px;cursor:pointer;font-weight:700;box-shadow:0 6px 16px rgba(37,99,235,.18)}
+      .nsdf-btn.secondary{background:#e2e8f0;color:#0f172a;box-shadow:none}
+      .nsdf-input{width:100%;padding:11px 13px;border-radius:12px;border:1px solid #dbeafe;background:#fff;color:#0f172a;outline:none;box-shadow:inset 0 1px 2px rgba(15,23,42,.04)}
+      .nsdf-input:focus{border-color:#60a5fa;box-shadow:0 0 0 4px rgba(96,165,250,.15)}
       .nsdf-list,.nsdf-messages,.nsdf-search-results{overflow:auto}
-      .nsdf-list{padding:8px;display:flex;flex-direction:column;gap:8px}
-      .nsdf-item{padding:10px;border:1px solid #374151;border-radius:10px;background:#111827;cursor:pointer}
-      .nsdf-item:hover,.nsdf-item.active{border-color:#60a5fa;background:#172033}
-      .nsdf-name{font-weight:700;margin-bottom:4px}
-      .nsdf-meta,.nsdf-preview{font-size:12px;color:#9ca3af;line-height:1.4}
-      .nsdf-messages{padding:12px;display:flex;flex-direction:column;gap:10px}
-      .nsdf-msg{max-width:80%;padding:10px 12px;border-radius:12px;line-height:1.45;white-space:pre-wrap;word-break:break-word}
-      .nsdf-msg.in{background:#1f2937;align-self:flex-start}
-      .nsdf-msg.out{background:#1d4ed8;align-self:flex-end}
-      .nsdf-msg-time{font-size:11px;opacity:.75;margin-top:6px}
-      .nsdf-empty{padding:24px;color:#9ca3af}
-      .nsdf-search-results{padding:10px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid #374151;max-height:220px}
-      .nsdf-search-item{padding:10px;border:1px solid #374151;border-radius:10px;background:#0b1220;cursor:pointer}
-      .nsdf-search-item:hover{border-color:#60a5fa}
-      .nsdf-toolbar{padding:10px 12px;border-bottom:1px solid #374151;display:flex;gap:8px}
+      .nsdf-list{padding:10px;display:flex;flex-direction:column;gap:10px}
+      .nsdf-item{padding:12px;border:1px solid #dbeafe;border-radius:14px;background:rgba(255,255,255,.86);cursor:pointer;transition:.18s ease}
+      .nsdf-item:hover,.nsdf-item.active{border-color:#60a5fa;background:#eff6ff;transform:translateY(-1px)}
+      .nsdf-name{font-weight:800;margin-bottom:6px;color:#0f172a}
+      .nsdf-meta,.nsdf-preview{font-size:12px;color:#64748b;line-height:1.45}
+      .nsdf-preview{margin-top:4px}
+      .nsdf-messages{padding:16px;display:flex;flex-direction:column;gap:12px;background-image:radial-gradient(circle at top right,rgba(191,219,254,.35),transparent 28%),radial-gradient(circle at bottom left,rgba(224,231,255,.6),transparent 30%)}
+      .nsdf-msg{max-width:78%;padding:12px 14px;border-radius:16px;line-height:1.55;white-space:pre-wrap;word-break:break-word;border:1px solid transparent}
+      .nsdf-msg.in{background:#fff;border-color:#e2e8f0;align-self:flex-start;box-shadow:0 8px 24px rgba(15,23,42,.06)}
+      .nsdf-msg.out{background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%);color:#fff;align-self:flex-end;box-shadow:0 10px 28px rgba(37,99,235,.22)}
+      .nsdf-msg-time{font-size:11px;opacity:.78;margin-top:7px}
+      .nsdf-empty{padding:28px;color:#64748b}
+      .nsdf-search-results{padding:12px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid #e2e8f0;max-height:240px;background:#f8fafc}
+      .nsdf-search-item{padding:11px 12px;border:1px solid #dbeafe;border-radius:12px;background:#fff;cursor:pointer;transition:.18s ease}
+      .nsdf-search-item:hover{border-color:#60a5fa;background:#eff6ff}
+      .nsdf-toolbar{padding:12px 16px;border-bottom:1px solid #e2e8f0;display:flex;gap:8px;background:rgba(248,250,252,.88)}
+      @media (prefers-color-scheme: dark){
+        #nsdf-history-panel-root{background:#0f172a;color:#e5e7eb;border-color:#334155;box-shadow:0 24px 80px rgba(0,0,0,.45)}
+        .nsdf-sidebar{background:linear-gradient(180deg,#0f172a 0%,#111827 100%);border-right-color:#334155}
+        .nsdf-main{background:linear-gradient(180deg,#111827 0%,#0f172a 100%)}
+        .nsdf-header,.nsdf-toolbar{background:rgba(15,23,42,.78);border-color:#334155}
+        .nsdf-btn.secondary{background:#334155;color:#e5e7eb}
+        .nsdf-input{background:#0b1220;color:#e5e7eb;border-color:#334155}
+        .nsdf-item{background:rgba(15,23,42,.82);border-color:#334155}
+        .nsdf-item:hover,.nsdf-item.active{background:#172554;border-color:#60a5fa}
+        .nsdf-name{color:#e5e7eb}
+        .nsdf-meta,.nsdf-preview,.nsdf-empty{color:#94a3b8}
+        .nsdf-messages{background-image:radial-gradient(circle at top right,rgba(30,64,175,.24),transparent 28%),radial-gradient(circle at bottom left,rgba(67,56,202,.26),transparent 30%)}
+        .nsdf-msg.in{background:#111827;border-color:#334155;color:#e5e7eb}
+        .nsdf-search-results{background:#0f172a;border-color:#334155}
+        .nsdf-search-item{background:#111827;border-color:#334155}
+        .nsdf-search-item:hover{background:#172554;border-color:#60a5fa}
+      }
     `;
     document.head.appendChild(style);
 
@@ -723,20 +742,20 @@
     root.innerHTML = `
       <div class="nsdf-sidebar">
         <div class="nsdf-header">
-          <div class="nsdf-title">私信备份</div>
+          <div class="nsdf-title">私信备份会话</div>
           <button class="nsdf-btn secondary" data-act="refresh">刷新</button>
           <button class="nsdf-btn secondary" data-act="close">关闭</button>
         </div>
-        <div class="nsdf-toolbar"><input class="nsdf-input" data-role="dialog-search" placeholder="筛选联系人 / 搜最后一条"></div>
+        <div class="nsdf-toolbar"><input class="nsdf-input" data-role="dialog-search" placeholder="筛选联系人 / 最后一条消息"></div>
         <div class="nsdf-list" data-role="dialog-list"></div>
       </div>
       <div class="nsdf-main">
         <div class="nsdf-header">
-          <div class="nsdf-title" data-role="current-title">选择一个会话</div>
+          <div class="nsdf-title" data-role="current-title">选择一个会话查看本地备份历史</div>
         </div>
-        <div class="nsdf-toolbar"><input class="nsdf-input" data-role="keyword-search" placeholder="搜索私信关键词，回车搜索"></div>
+        <div class="nsdf-toolbar"><input class="nsdf-input" data-role="keyword-search" placeholder="搜索私信关键词，按回车开始"></div>
         <div class="nsdf-search-results" data-role="search-results" style="display:none"></div>
-        <div class="nsdf-messages" data-role="message-list"><div class="nsdf-empty">还没选会话。</div></div>
+        <div class="nsdf-messages" data-role="message-list"><div class="nsdf-empty">还没选会话。左边点一个联系人，右边就会显示本地备份消息。</div></div>
       </div>
     `;
     document.body.appendChild(root);
@@ -863,19 +882,61 @@
     searchAndExport().catch((e) => alert(`搜索失败: ${e.message}`));
   });
 
-  GM_registerMenuCommand('备份完整历史到 WebDAV', () => {
-    backupToWebDAV().catch((e) => alert(`WebDAV 备份失败: ${e.message}`));
-  });
-
-  GM_registerMenuCommand('打开私信备份面板', () => {
-    openHistoryPanel().catch((e) => alert(`打开面板失败: ${e.message}`));
-  });
-
   GM_registerMenuCommand('配置自动打开页面增量同步', () => {
     configureAutoBackup();
   });
 
+  function injectPageActions() {
+    if (document.getElementById('nsdf-page-actions')) return;
+
+    const style = document.createElement('style');
+    style.id = 'nsdf-page-actions-style';
+    style.textContent = `
+      #nsdf-page-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:14px 0;padding:14px 16px;border:1px solid #dbeafe;border-radius:16px;background:linear-gradient(135deg,#f8fafc 0%,#eff6ff 100%);box-shadow:0 10px 30px rgba(15,23,42,.06)}
+      .nsdf-page-btn{appearance:none;border:none;border-radius:12px;padding:10px 15px;font-size:14px;font-weight:700;cursor:pointer;background:#2563eb;color:#fff;box-shadow:0 8px 18px rgba(37,99,235,.18)}
+      .nsdf-page-btn.secondary{background:#0f172a;color:#fff;box-shadow:0 8px 18px rgba(15,23,42,.16)}
+      .nsdf-page-btn.ghost{background:#e2e8f0;color:#0f172a;box-shadow:none}
+      .nsdf-page-tip{width:100%;font-size:12px;color:#64748b;line-height:1.5}
+      @media (prefers-color-scheme: dark){
+        #nsdf-page-actions{background:linear-gradient(135deg,#0f172a 0%,#111827 100%);border-color:#334155;box-shadow:0 12px 30px rgba(0,0,0,.2)}
+        .nsdf-page-tip{color:#94a3b8}
+        .nsdf-page-btn.ghost{background:#334155;color:#e5e7eb}
+      }
+    `;
+    document.head.appendChild(style);
+
+    const host = document.querySelector('.container, main, .main, .content, .notification-page, body');
+    if (!host) return;
+
+    const anchor = Array.from(document.querySelectorAll('h1,h2,.card,.panel,.notification-list,.message-list,.conversation-list')).find(Boolean);
+    const box = document.createElement('div');
+    box.id = 'nsdf-page-actions';
+    box.innerHTML = `
+      <button class="nsdf-page-btn secondary" data-act="panel">打开私信备份面板</button>
+      <button class="nsdf-page-btn" data-act="webdav">备份完整历史到 WebDAV</button>
+      <button class="nsdf-page-btn ghost" data-act="autosync">配置自动打开页面增量同步</button>
+      <div class="nsdf-page-tip">本地备份工具入口：面板查看 / WebDAV 备份 / 自动增量同步</div>
+    `;
+
+    if (anchor && anchor.parentNode) {
+      anchor.parentNode.insertBefore(box, anchor);
+    } else {
+      host.prepend(box);
+    }
+
+    box.querySelector('[data-act="panel"]').onclick = () => {
+      openHistoryPanel().catch((e) => alert(`打开面板失败: ${e.message}`));
+    };
+    box.querySelector('[data-act="webdav"]').onclick = () => {
+      backupToWebDAV().catch((e) => alert(`WebDAV 备份失败: ${e.message}`));
+    };
+    box.querySelector('[data-act="autosync"]').onclick = () => {
+      configureAutoBackup();
+    };
+  }
+
   setTimeout(() => {
+    injectPageActions();
     maybeRunAutoBackup();
   }, 5000);
 })();
