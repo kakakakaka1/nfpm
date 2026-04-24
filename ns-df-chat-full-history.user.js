@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NodeSeek / DeepFlood 私信备份助手
 // @namespace    https://www.nodeseek.com/
-// @version      0.5.6
+// @version      0.5.7
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -1045,8 +1045,7 @@
     box.id = 'nsdf-page-actions';
     box.innerHTML = `
       <button class="nsdf-page-btn secondary" data-act="panel">历史私信</button>
-      <button class="nsdf-page-btn" data-act="webdav">WebDAV备份</button>
-      <button class="nsdf-page-btn ghost" data-act="autosync">自动增量同步</button>
+      <button class="nsdf-page-btn" data-act="settings">同步与备份设置</button>
     `;
 
     if (anchor.parentNode && anchor !== document.body) {
@@ -1058,11 +1057,8 @@
     box.querySelector('[data-act="panel"]').onclick = () => {
       openHistoryPanel().catch((e) => alert(`打开面板失败: ${e.message}`));
     };
-    box.querySelector('[data-act="webdav"]').onclick = () => {
-      backupToWebDAV().catch((e) => alert(`WebDAV 备份失败: ${e.message}`));
-    };
-    box.querySelector('[data-act="autosync"]').onclick = () => {
-      configureAutoBackup();
+    box.querySelector('[data-act="settings"]').onclick = () => {
+      configureAutoBackup().catch((e) => alert(`打开设置失败: ${e.message}`));
     };
   }
 
