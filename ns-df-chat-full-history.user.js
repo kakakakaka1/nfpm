@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NodeSeek / DeepFlood 私信备份助手
 // @namespace    https://www.nodeseek.com/
-// @version      0.5.3
+// @version      0.5.4
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -886,42 +886,67 @@
     configureAutoBackup();
   });
 
+  function isMessageListPage() {
+    const appSwitch = document.querySelector('.app-switch');
+    const messageLink = appSwitch?.querySelector('a[href="#/message?mode=list"]');
+    if (messageLink?.classList.contains('router-link-active')) return true;
+    return window.location.hash.includes('/message?mode=list') || window.location.hash.includes('mode=list');
+  }
+
+  function findMessageListAnchor() {
+    return (
+      document.querySelector('.message-page .message-list') ||
+      document.querySelector('.message-list') ||
+      document.querySelector('.conversation-list') ||
+      document.querySelector('.notification-page .card') ||
+      document.querySelector('.notification-page') ||
+      document.querySelector('.container') ||
+      document.body
+    );
+  }
+
   function injectPageActions() {
+    if (!isMessageListPage()) return;
     if (document.getElementById('nsdf-page-actions')) return;
 
     const style = document.createElement('style');
     style.id = 'nsdf-page-actions-style';
     style.textContent = `
-      #nsdf-page-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:14px 0;padding:14px 16px;border:1px solid #dbeafe;border-radius:16px;background:linear-gradient(135deg,#f8fafc 0%,#eff6ff 100%);box-shadow:0 10px 30px rgba(15,23,42,.06)}
-      .nsdf-page-btn{appearance:none;border:none;border-radius:12px;padding:10px 15px;font-size:14px;font-weight:700;cursor:pointer;background:#2563eb;color:#fff;box-shadow:0 8px 18px rgba(37,99,235,.18)}
-      .nsdf-page-btn.secondary{background:#0f172a;color:#fff;box-shadow:0 8px 18px rgba(15,23,42,.16)}
-      .nsdf-page-btn.ghost{background:#e2e8f0;color:#0f172a;box-shadow:none}
-      .nsdf-page-tip{width:100%;font-size:12px;color:#64748b;line-height:1.5}
+      #nsdf-page-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0 12px;padding:0}
+      .nsdf-page-btn{appearance:none;border:1px solid #dbeafe;border-radius:10px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;background:#fff;color:#2563eb;line-height:1;transition:.18s ease}
+      .nsdf-page-btn:hover{background:#eff6ff;border-color:#93c5fd}
+      .nsdf-page-btn.secondary{color:#0f172a;border-color:#e2e8f0}
+      .nsdf-page-btn.secondary:hover{background:#f8fafc;border-color:#cbd5e1}
+      .nsdf-page-btn.ghost{color:#475569;border-color:#e2e8f0;background:#f8fafc}
+      .nsdf-page-btn.ghost:hover{background:#f1f5f9}
       @media (prefers-color-scheme: dark){
-        #nsdf-page-actions{background:linear-gradient(135deg,#0f172a 0%,#111827 100%);border-color:#334155;box-shadow:0 12px 30px rgba(0,0,0,.2)}
-        .nsdf-page-tip{color:#94a3b8}
-        .nsdf-page-btn.ghost{background:#334155;color:#e5e7eb}
+        .nsdf-page-btn{background:#0f172a;border-color:#334155;color:#93c5fd}
+        .nsdf-page-btn:hover{background:#172554;border-color:#3b82f6}
+        .nsdf-page-btn.secondary{color:#e5e7eb;border-color:#334155}
+        .nsdf-page-btn.secondary:hover{background:#111827}
+        .nsdf-page-btn.ghost{background:#111827;color:#94a3b8;border-color:#334155}
+        .nsdf-page-btn.ghost:hover{background:#1f2937}
       }
     `;
-    document.head.appendChild(style);
+    if (!document.getElementById('nsdf-page-actions-style')) {
+      document.head.appendChild(style);
+    }
 
-    const host = document.querySelector('.container, main, .main, .content, .notification-page, body');
-    if (!host) return;
+    const anchor = findMessageListAnchor();
+    if (!anchor) return;
 
-    const anchor = Array.from(document.querySelectorAll('h1,h2,.card,.panel,.notification-list,.message-list,.conversation-list')).find(Boolean);
     const box = document.createElement('div');
     box.id = 'nsdf-page-actions';
     box.innerHTML = `
-      <button class="nsdf-page-btn secondary" data-act="panel">打开私信备份面板</button>
-      <button class="nsdf-page-btn" data-act="webdav">备份完整历史到 WebDAV</button>
-      <button class="nsdf-page-btn ghost" data-act="autosync">配置自动打开页面增量同步</button>
-      <div class="nsdf-page-tip">本地备份工具入口：面板查看 / WebDAV 备份 / 自动增量同步</div>
+      <button class="nsdf-page-btn secondary" data-act="panel">历史私信</button>
+      <button class="nsdf-page-btn" data-act="webdav">WebDAV备份</button>
+      <button class="nsdf-page-btn ghost" data-act="autosync">自动增量同步</button>
     `;
 
-    if (anchor && anchor.parentNode) {
+    if (anchor.parentNode && anchor !== document.body) {
       anchor.parentNode.insertBefore(box, anchor);
     } else {
-      host.prepend(box);
+      document.body.prepend(box);
     }
 
     box.querySelector('[data-act="panel"]').onclick = () => {
@@ -938,5 +963,23 @@
   setTimeout(() => {
     injectPageActions();
     maybeRunAutoBackup();
-  }, 5000);
+  }, 1500);
+
+  let nsdfPageActionObserver = null;
+  function watchRouteChanges() {
+    if (nsdfPageActionObserver) return;
+    nsdfPageActionObserver = new MutationObserver(() => {
+      if (isMessageListPage() && !document.getElementById('nsdf-page-actions')) {
+        injectPageActions();
+      }
+    });
+    nsdfPageActionObserver.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('hashchange', () => {
+      const old = document.getElementById('nsdf-page-actions');
+      if (old) old.remove();
+      setTimeout(() => injectPageActions(), 300);
+    });
+  }
+
+  watchRouteChanges();
 })();
