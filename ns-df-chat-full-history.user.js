@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NS-DF 私信完整历史备份版（草案）
 // @namespace    https://www.nodeseek.com/
-// @version      0.4.6
+// @version      0.4.7
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -479,24 +479,6 @@
     Utils.downloadJson(`${site.id}_chat_full_history_${currentUserId}_${Date.now()}.json`, payload);
   }
 
-  async function exportDialogsOnly() {
-    const api = new APIClient(site);
-    const currentUserId = await resolveCurrentUserId(api);
-    const db = new ChatDB(currentUserId, site);
-    await db.init();
-    const dialogs = await db.getAllDialogs();
-    Utils.downloadJson(`${site.id}_dialogs_${currentUserId}_${Date.now()}.json`, {
-      metadata: {
-        userId: currentUserId,
-        siteId: site.id,
-        exportTime: new Date().toISOString(),
-        version: '0.3.0',
-        type: 'dialogs-only',
-      },
-      dialogs,
-    });
-  }
-
   async function importHistoryJson() {
     const api = new APIClient(site);
     const currentUserId = await resolveCurrentUserId(api);
@@ -747,10 +729,6 @@
 
   GM_registerMenuCommand('导出完整历史 JSON', () => {
     exportHistoryJson().catch((e) => alert(`导出失败: ${e.message}`));
-  });
-
-  GM_registerMenuCommand('导出会话摘要 JSON', () => {
-    exportDialogsOnly().catch((e) => alert(`导出失败: ${e.message}`));
   });
 
   GM_registerMenuCommand('导入完整历史 JSON', () => {
