@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NS-DF 私信完整历史备份版（草案）
 // @namespace    https://www.nodeseek.com/
-// @version      0.4.1
+// @version      0.4.2
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -288,19 +288,45 @@
     }
   }
 
+  function extractDialogs(listData) {
+    if (Array.isArray(listData)) return listData;
+    if (Array.isArray(listData?.msgArray)) return listData.msgArray;
+    if (Array.isArray(listData?.list)) return listData.list;
+    if (Array.isArray(listData?.data)) return listData.data;
+    if (Array.isArray(listData?.messageList)) return listData.messageList;
+    if (Array.isArray(listData?.msg_list)) return listData.msg_list;
+    if (Array.isArray(listData?.result)) return listData.result;
+    if (Array.isArray(listData?.rows)) return listData.rows;
+    return [];
+  }
+
+  function extractMessages(detail) {
+    if (Array.isArray(detail)) return detail;
+    if (Array.isArray(detail?.msgArray)) return detail.msgArray;
+    if (Array.isArray(detail?.data)) return detail.data;
+    if (Array.isArray(detail?.messages)) return detail.messages;
+    if (Array.isArray(detail?.list)) return detail.list;
+    if (Array.isArray(detail?.result)) return detail.result;
+    if (Array.isArray(detail?.rows)) return detail.rows;
+    return [];
+  }
+
   function normalizeMessage(raw, currentUserId, memberId, memberName) {
-    const pair = [raw.sender_id, raw.receiver_id].sort((a, b) => a - b).join(':');
+    const senderId = raw.sender_id ?? raw.senderId ?? raw.from_uid ?? raw.fromUid;
+    const receiverId = raw.receiver_id ?? raw.receiverId ?? raw.to_uid ?? raw.toUid;
+    const messageId = raw.message_id ?? raw.messageId ?? raw.id;
+    const pair = [senderId, receiverId].filter((x) => x !== undefined && x !== null).sort((a, b) => a - b).join(':');
     return {
-      message_id: raw.message_id,
+      message_id: messageId,
       member_id: memberId,
       member_name: memberName,
-      sender_id: raw.sender_id,
-      receiver_id: raw.receiver_id,
-      direction: raw.sender_id === currentUserId ? 'out' : 'in',
-      content: raw.content || '',
-      viewed: raw.viewed ?? 0,
-      updated_at: raw.updated_at || null,
-      created_at: raw.created_at || null,
+      sender_id: senderId,
+      receiver_id: receiverId,
+      direction: senderId === currentUserId ? 'out' : 'in',
+      content: raw.content || raw.message || raw.body || '',
+      viewed: raw.viewed ?? raw.is_read ?? 0,
+      updated_at: raw.updated_at || raw.updatedAt || null,
+      created_at: raw.created_at || raw.createdAt || null,
       pair_key: pair,
       raw,
     };
@@ -325,7 +351,7 @@
     await db.init();
 
     const listData = await api.getMessageList();
-    const dialogs = listData?.msgArray || listData?.list || listData?.data || [];
+    const dialogs = extractDialogs(listData);
 
     let dialogCount = 0;
     let messageCount = 0;
@@ -356,7 +382,7 @@
 
       await db.setMetadata('resume_checkpoint', { member_id: memberId, at: new Date().toISOString(), mode });
       const detail = await api.getChatMessages(memberId);
-      const msgArray = detail?.msgArray || detail?.data || [];
+      const msgArray = extractMessages(detail);
 
       let lastCreatedAt = null;
       let lastMessage = '';
@@ -728,8 +754,19 @@
     exportHistoryJsonChunked().catch((e) => alert(`分片导出失败: ${e.message}`));
   });
 
+  async function exportDebugPayload() {
+    const api = new APIClient(site);
+    const listData = await api.getMessageList();
+    Utils.downloadJson(`${site.id}_message_list_debug_${Date.now()}.json`, listData);
+    alert('已导出 message/list 原始调试 JSON');
+  }
+
   GM_registerMenuCommand('配置自动定时备份', () => {
     configureAutoBackup();
+  });
+
+  GM_registerMenuCommand('导出原始 message/list 调试 JSON', () => {
+    exportDebugPayload().catch((e) => alert(`调试导出失败: ${e.message}`));
   });
 
   setTimeout(() => {
