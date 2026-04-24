@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NS-DF 私信完整历史备份版（草案）
 // @namespace    https://www.nodeseek.com/
-// @version      0.4.4
+// @version      0.4.5
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -407,13 +407,16 @@
       await db.setMetadata('resume_checkpoint', { member_id: memberId, at: new Date().toISOString(), mode });
       const detail = await api.getChatMessages(memberId);
       const msgArray = extractMessages(detail);
+      const effectiveMemberId = detail?.talkTo?.member_id || memberId;
+      const effectiveMemberName = detail?.talkTo?.member_name || memberName;
 
       let lastCreatedAt = null;
       let lastMessage = '';
       let localWrites = 0;
       for (const raw of msgArray) {
-        if (!raw?.message_id) continue;
-        const msg = normalizeMessage(raw, currentUserId, memberId, memberName);
+        const rawMessageId = raw?.message_id ?? raw?.messageId ?? raw?.id;
+        if (!rawMessageId) continue;
+        const msg = normalizeMessage(raw, currentUserId, effectiveMemberId, effectiveMemberName);
         await db.putMessage(msg);
         messageCount += 1;
         localWrites += 1;
