@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NodeSeek / DeepFlood 私信备份助手
 // @namespace    https://www.nodeseek.com/
-// @version      0.5.4
+// @version      0.5.6
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -563,14 +563,7 @@
   }
 
   async function configureWebDAV() {
-    const current = GM_getValue(`webdav_config_${site.id}`, null);
-    let cfg = current ? JSON.parse(current) : {};
-    cfg.serverUrl = prompt('WebDAV 服务器地址', cfg.serverUrl || '') || cfg.serverUrl || '';
-    cfg.username = prompt('WebDAV 用户名', cfg.username || '') || cfg.username || '';
-    cfg.password = prompt('WebDAV 密码', cfg.password || '') || cfg.password || '';
-    cfg.backupPath = prompt('备份路径', cfg.backupPath || '/ns_df_messages_backup/') || cfg.backupPath || '/ns_df_messages_backup/';
-    GM_setValue(`webdav_config_${site.id}`, JSON.stringify(cfg));
-    alert('WebDAV 配置已保存');
+    return configureAutoBackup();
   }
 
   async function configureR2() {
@@ -616,7 +609,8 @@
     await db.init();
     let cfgRaw = GM_getValue(`webdav_config_${site.id}`, null);
     if (!cfgRaw) {
-      await configureWebDAV();
+      const saved = await configureWebDAV();
+      if (!saved) throw new Error('已取消 WebDAV 配置');
       cfgRaw = GM_getValue(`webdav_config_${site.id}`, null);
     }
     if (!cfgRaw) throw new Error('请先配置 WebDAV');
@@ -647,14 +641,126 @@
     alert(`WebDAV 备份完成\n${url}`);
   }
 
-  function configureAutoBackup() {
-    const current = GM_getValue(`auto_backup_${site.id}`, null);
-    let cfg = current ? JSON.parse(current) : {};
-    cfg.enabled = confirm(`启用打开私信页后自动增量同步？\n当前: ${cfg.enabled ? '已启用' : '未启用'}`);
-    cfg.intervalMinutes = Number(prompt('最短触发间隔（分钟）', String(cfg.intervalMinutes || 30)) || (cfg.intervalMinutes || 30));
-    cfg.updatedAt = new Date().toISOString();
-    GM_setValue(`auto_backup_${site.id}`, JSON.stringify(cfg));
-    alert('自动增量同步配置已保存（打开私信页时按间隔自动触发）');
+  async function configureAutoBackup() {
+    const currentWebDAV = GM_getValue(`webdav_config_${site.id}`, null);
+    const webdavCfg = currentWebDAV ? JSON.parse(currentWebDAV) : {};
+    const currentAuto = GM_getValue(`auto_backup_${site.id}`, null);
+    const autoCfg = currentAuto ? JSON.parse(currentAuto) : {};
+
+    return new Promise((resolve) => {
+      const old = document.getElementById('nsdf-webdav-modal');
+      if (old) old.remove();
+
+      const style = document.createElement('style');
+      style.id = 'nsdf-webdav-modal-style';
+      style.textContent = `
+        #nsdf-webdav-modal{position:fixed;inset:0;z-index:1000001;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,.45);backdrop-filter:blur(4px)}
+        .nsdf-webdav-card{width:min(620px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;background:#fff;border-radius:18px;box-shadow:0 24px 80px rgba(15,23,42,.28);padding:20px}
+        .nsdf-webdav-title{font-size:20px;font-weight:800;color:#0f172a;margin-bottom:6px}
+        .nsdf-webdav-desc{font-size:13px;color:#64748b;margin-bottom:16px}
+        .nsdf-webdav-section{margin-top:18px;padding-top:18px;border-top:1px solid #e2e8f0}
+        .nsdf-webdav-grid{display:grid;grid-template-columns:1fr;gap:12px}
+        .nsdf-webdav-field label{display:block;font-size:13px;font-weight:700;color:#334155;margin-bottom:6px}
+        .nsdf-webdav-field input,.nsdf-webdav-field select{width:100%;padding:11px 12px;border-radius:12px;border:1px solid #cbd5e1;font-size:14px;outline:none;background:#fff}
+        .nsdf-webdav-field input:focus,.nsdf-webdav-field select:focus{border-color:#3b82f6;box-shadow:0 0 0 4px rgba(59,130,246,.15)}
+        .nsdf-webdav-inline{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:12px}
+        .nsdf-webdav-inline input[type="checkbox"]{width:18px;height:18px}
+        .nsdf-webdav-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
+        .nsdf-webdav-btn{appearance:none;border:none;border-radius:12px;padding:10px 16px;font-size:14px;font-weight:700;cursor:pointer}
+        .nsdf-webdav-btn.primary{background:#2563eb;color:#fff}
+        .nsdf-webdav-btn.secondary{background:#e2e8f0;color:#0f172a}
+        @media (prefers-color-scheme: dark){
+          .nsdf-webdav-card{background:#0f172a}
+          .nsdf-webdav-title{color:#e5e7eb}
+          .nsdf-webdav-desc{color:#94a3b8}
+          .nsdf-webdav-section{border-color:#334155}
+          .nsdf-webdav-field label{color:#cbd5e1}
+          .nsdf-webdav-field input,.nsdf-webdav-field select,.nsdf-webdav-inline{background:#111827;color:#e5e7eb;border-color:#334155}
+          .nsdf-webdav-btn.secondary{background:#334155;color:#e5e7eb}
+        }
+      `;
+      if (!document.getElementById('nsdf-webdav-modal-style')) {
+        document.head.appendChild(style);
+      }
+
+      const modal = document.createElement('div');
+      modal.id = 'nsdf-webdav-modal';
+      modal.innerHTML = `
+        <div class="nsdf-webdav-card">
+          <div class="nsdf-webdav-title">同步与备份设置</div>
+          <div class="nsdf-webdav-desc">一次配置 WebDAV 备份和自动增量同步，不再一条一条地弹窗。</div>
+          <div class="nsdf-webdav-grid">
+            <div class="nsdf-webdav-field">
+              <label>WebDAV 服务器地址</label>
+              <input data-role="serverUrl" placeholder="https://dav.example.com/dav" value="${(webdavCfg.serverUrl || '').replace(/"/g, '&quot;')}">
+            </div>
+            <div class="nsdf-webdav-field">
+              <label>WebDAV 用户名</label>
+              <input data-role="username" placeholder="用户名" value="${(webdavCfg.username || '').replace(/"/g, '&quot;')}">
+            </div>
+            <div class="nsdf-webdav-field">
+              <label>WebDAV 密码</label>
+              <input data-role="password" type="password" placeholder="密码 / 应用专用密码" value="${(webdavCfg.password || '').replace(/"/g, '&quot;')}">
+            </div>
+            <div class="nsdf-webdav-field">
+              <label>备份路径</label>
+              <input data-role="backupPath" placeholder="/ns_df_messages_backup/" value="${(webdavCfg.backupPath || '/ns_df_messages_backup/').replace(/"/g, '&quot;')}">
+            </div>
+          </div>
+          <div class="nsdf-webdav-section">
+            <div class="nsdf-webdav-title" style="font-size:16px;margin-bottom:10px">自动增量同步</div>
+            <div class="nsdf-webdav-grid">
+              <label class="nsdf-webdav-inline">
+                <input data-role="autoEnabled" type="checkbox" ${autoCfg.enabled ? 'checked' : ''}>
+                <span>打开私信列表页时自动执行增量同步</span>
+              </label>
+              <div class="nsdf-webdav-field">
+                <label>最短触发间隔（分钟）</label>
+                <input data-role="intervalMinutes" type="number" min="1" step="1" value="${Number(autoCfg.intervalMinutes || 30)}">
+              </div>
+            </div>
+          </div>
+          <div class="nsdf-webdav-actions">
+            <button class="nsdf-webdav-btn secondary" data-act="cancel">取消</button>
+            <button class="nsdf-webdav-btn primary" data-act="save">确定</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+
+      const cleanup = (saved) => {
+        modal.remove();
+        resolve(saved);
+      };
+
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) cleanup(false);
+      });
+
+      modal.querySelector('[data-act="cancel"]').onclick = () => cleanup(false);
+      modal.querySelector('[data-act="save"]').onclick = () => {
+        const nextWebDAV = {
+          serverUrl: modal.querySelector('[data-role="serverUrl"]').value.trim(),
+          username: modal.querySelector('[data-role="username"]').value.trim(),
+          password: modal.querySelector('[data-role="password"]').value,
+          backupPath: modal.querySelector('[data-role="backupPath"]').value.trim() || '/ns_df_messages_backup/',
+        };
+        const nextAuto = {
+          enabled: modal.querySelector('[data-role="autoEnabled"]').checked,
+          intervalMinutes: Math.max(1, Number(modal.querySelector('[data-role="intervalMinutes"]').value || 30)),
+          updatedAt: new Date().toISOString(),
+        };
+        if ((nextWebDAV.serverUrl || nextWebDAV.username || nextWebDAV.password) && (!nextWebDAV.serverUrl || !nextWebDAV.username || !nextWebDAV.password)) {
+          alert('如果要保存 WebDAV，请至少填完整：服务器地址、用户名、密码');
+          return;
+        }
+        if (nextWebDAV.serverUrl && nextWebDAV.username && nextWebDAV.password) {
+          GM_setValue(`webdav_config_${site.id}`, JSON.stringify(nextWebDAV));
+        }
+        GM_setValue(`auto_backup_${site.id}`, JSON.stringify(nextAuto));
+        cleanup(true);
+      };
+    });
   }
 
   async function maybeRunAutoBackup() {
