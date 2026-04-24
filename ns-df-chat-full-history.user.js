@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NodeSeek / DeepFlood 私信备份助手
 // @namespace    https://www.nodeseek.com/
-// @version      0.5.8
+// @version      0.5.9
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -681,10 +681,12 @@
         .nsdf-webdav-field input:focus,.nsdf-webdav-field select:focus{border-color:#3b82f6;box-shadow:0 0 0 4px rgba(59,130,246,.15)}
         .nsdf-webdav-inline{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:12px}
         .nsdf-webdav-inline input[type="checkbox"]{width:18px;height:18px}
-        .nsdf-webdav-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
+        .nsdf-webdav-actions{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:18px;flex-wrap:wrap}
+        .nsdf-webdav-actions-left,.nsdf-webdav-actions-right{display:flex;gap:10px;flex-wrap:wrap}
         .nsdf-webdav-btn{appearance:none;border:none;border-radius:12px;padding:10px 16px;font-size:14px;font-weight:700;cursor:pointer}
         .nsdf-webdav-btn.primary{background:#2563eb;color:#fff}
         .nsdf-webdav-btn.secondary{background:#e2e8f0;color:#0f172a}
+        .nsdf-webdav-btn.ghost{background:#0f172a;color:#fff}
         @media (prefers-color-scheme: dark){
           .nsdf-webdav-card{background:#0f172a}
           .nsdf-webdav-title{color:#e5e7eb}
@@ -749,8 +751,13 @@
             </div>
           </div>
           <div class="nsdf-webdav-actions">
-            <button class="nsdf-webdav-btn secondary" data-act="cancel">取消</button>
-            <button class="nsdf-webdav-btn primary" data-act="save">确定</button>
+            <div class="nsdf-webdav-actions-left">
+              <button class="nsdf-webdav-btn ghost" data-act="run-sync">立即执行一次增量同步</button>
+            </div>
+            <div class="nsdf-webdav-actions-right">
+              <button class="nsdf-webdav-btn secondary" data-act="cancel">取消</button>
+              <button class="nsdf-webdav-btn primary" data-act="save">确定</button>
+            </div>
           </div>
         </div>
       `;
@@ -766,6 +773,21 @@
       });
 
       modal.querySelector('[data-act="cancel"]').onclick = () => cleanup(false);
+      modal.querySelector('[data-act="run-sync"]').onclick = async () => {
+        const btn = modal.querySelector('[data-act="run-sync"]');
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '正在同步...';
+        try {
+          await syncAllHistory('incremental');
+          cleanup(true);
+        } catch (e) {
+          alert(`增量同步失败: ${e.message}`);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = originalText;
+        }
+      };
       modal.querySelector('[data-act="save"]').onclick = () => {
         const nextWebDAV = {
           serverUrl: modal.querySelector('[data-role="serverUrl"]').value.trim(),
