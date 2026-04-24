@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NodeSeek / DeepFlood 私信备份助手
 // @namespace    https://www.nodeseek.com/
-// @version      0.5.9
+// @version      0.6.0
 // @description  按 message_id 保存完整私信历史，支持R2/WebDAV备份、分片导出、自动备份
 // @author       OpenClaw
 // @match        https://www.nodeseek.com/notification*
@@ -1018,30 +1018,6 @@
     await refreshAll();
   }
 
-  GM_registerMenuCommand('增量同步私信历史', () => {
-    syncAllHistory('incremental').catch((e) => alert(`增量同步失败: ${e.message}`));
-  });
-
-  GM_registerMenuCommand('全量同步私信历史', () => {
-    syncAllHistory('full').catch((e) => alert(`全量同步失败: ${e.message}`));
-  });
-
-  GM_registerMenuCommand('导出完整历史 JSON', () => {
-    exportHistoryJson().catch((e) => alert(`导出失败: ${e.message}`));
-  });
-
-  GM_registerMenuCommand('导入完整历史 JSON', () => {
-    importHistoryJson().catch((e) => alert(`导入失败: ${e.message}`));
-  });
-
-  GM_registerMenuCommand('搜索并导出命中消息', () => {
-    searchAndExport().catch((e) => alert(`搜索失败: ${e.message}`));
-  });
-
-  GM_registerMenuCommand('配置自动打开页面增量同步', () => {
-    configureAutoBackup();
-  });
-
   function isMessageListPage() {
     const appSwitch = document.querySelector('.app-switch');
     const messageLink = appSwitch?.querySelector('a[href="#/message?mode=list"]');
@@ -1059,6 +1035,70 @@
       document.querySelector('.container') ||
       document.body
     );
+  }
+
+  async function openToolsPanel() {
+    const old = document.getElementById('nsdf-tools-modal');
+    if (old) {
+      old.style.display = old.style.display === 'none' ? 'flex' : 'none';
+      return;
+    }
+
+    const style = document.createElement('style');
+    style.id = 'nsdf-tools-modal-style';
+    style.textContent = `
+      #nsdf-tools-modal{position:fixed;inset:0;z-index:1000000;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,.36);backdrop-filter:blur(4px)}
+      .nsdf-tools-card{width:min(420px,calc(100vw - 32px));background:#fff;border-radius:18px;box-shadow:0 24px 80px rgba(15,23,42,.25);padding:16px}
+      .nsdf-tools-title{font-size:18px;font-weight:800;color:#0f172a;margin-bottom:12px}
+      .nsdf-tools-list{display:flex;flex-direction:column;gap:10px}
+      .nsdf-tools-item{appearance:none;border:1px solid #dbeafe;background:#f8fafc;color:#0f172a;border-radius:14px;padding:14px 14px;text-align:left;font-size:15px;font-weight:700;cursor:pointer}
+      .nsdf-tools-item:hover{background:#eff6ff;border-color:#93c5fd}
+      .nsdf-tools-close{margin-top:14px;appearance:none;border:none;background:#e2e8f0;color:#0f172a;border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer;width:100%}
+      @media (prefers-color-scheme: dark){
+        .nsdf-tools-card{background:#0f172a}
+        .nsdf-tools-title{color:#e5e7eb}
+        .nsdf-tools-item{background:#111827;color:#e5e7eb;border-color:#334155}
+        .nsdf-tools-item:hover{background:#172554;border-color:#3b82f6}
+        .nsdf-tools-close{background:#334155;color:#e5e7eb}
+      }
+    `;
+    if (!document.getElementById('nsdf-tools-modal-style')) document.head.appendChild(style);
+
+    const modal = document.createElement('div');
+    modal.id = 'nsdf-tools-modal';
+    modal.innerHTML = `
+      <div class="nsdf-tools-card">
+        <div class="nsdf-tools-title">更多操作</div>
+        <div class="nsdf-tools-list">
+          <button class="nsdf-tools-item" data-act="sync-incremental">增量同步私信历史</button>
+          <button class="nsdf-tools-item" data-act="sync-full">全量同步私信历史</button>
+          <button class="nsdf-tools-item" data-act="export">导出完整历史 JSON</button>
+          <button class="nsdf-tools-item" data-act="import">导入完整历史 JSON</button>
+          <button class="nsdf-tools-item" data-act="search-export">搜索并导出命中消息</button>
+        </div>
+        <button class="nsdf-tools-close" data-act="close">关闭</button>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    const close = () => { modal.style.display = 'none'; };
+    modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+    modal.querySelector('[data-act="close"]').onclick = close;
+    modal.querySelector('[data-act="sync-incremental"]').onclick = async () => {
+      try { await syncAllHistory('incremental'); close(); } catch (e) { alert(`增量同步失败: ${e.message}`); }
+    };
+    modal.querySelector('[data-act="sync-full"]').onclick = async () => {
+      try { await syncAllHistory('full'); close(); } catch (e) { alert(`全量同步失败: ${e.message}`); }
+    };
+    modal.querySelector('[data-act="export"]').onclick = async () => {
+      try { await exportHistoryJson(); close(); } catch (e) { alert(`导出失败: ${e.message}`); }
+    };
+    modal.querySelector('[data-act="import"]').onclick = async () => {
+      try { await importHistoryJson(); close(); } catch (e) { alert(`导入失败: ${e.message}`); }
+    };
+    modal.querySelector('[data-act="search-export"]').onclick = async () => {
+      try { await searchAndExport(); close(); } catch (e) { alert(`搜索失败: ${e.message}`); }
+    };
   }
 
   function injectPageActions() {
@@ -1096,6 +1136,7 @@
     box.innerHTML = `
       <button class="nsdf-page-btn secondary" data-act="panel">历史私信</button>
       <button class="nsdf-page-btn" data-act="settings">同步与备份设置</button>
+      <button class="nsdf-page-btn ghost" data-act="tools">更多操作</button>
     `;
 
     if (anchor.parentNode && anchor !== document.body) {
@@ -1109,6 +1150,9 @@
     };
     box.querySelector('[data-act="settings"]').onclick = () => {
       configureAutoBackup().catch((e) => alert(`打开设置失败: ${e.message}`));
+    };
+    box.querySelector('[data-act="tools"]').onclick = () => {
+      openToolsPanel().catch((e) => alert(`打开操作窗口失败: ${e.message}`));
     };
   }
 
