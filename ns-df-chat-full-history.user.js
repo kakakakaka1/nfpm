@@ -587,6 +587,24 @@
     alert('R2 配置已保存');
   }
 
+  function webDAVRequest(method, url, cfg, options = {}) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method,
+        url,
+        timeout: options.timeout || 20000,
+        headers: {
+          Authorization: Utils.basicAuth(cfg.username, cfg.password),
+          ...(options.headers || {}),
+        },
+        data: options.data,
+        onload: resolve,
+        onerror: reject,
+        ontimeout: () => reject(new Error(`WebDAV ${method} timeout`)),
+      });
+    });
+  }
+
   async function ensureWebDAVDirectory(cfg) {
     const serverBase = cfg.serverUrl.replace(/\/$/, '');
     const normalized = (cfg.backupPath || '/').replace(/\/+$/, '');
@@ -595,22 +613,64 @@
     for (const seg of segments) {
       current += '/' + seg;
       const url = `${serverBase}${current}/`;
-      await new Promise((resolve, reject) => {
-        GM_xmlhttpRequest({
-          method: 'MKCOL',
-          url,
-          headers: {
-            Authorization: Utils.basicAuth(cfg.username, cfg.password),
-          },
-          onload: (resp) => {
-            if ((resp.status >= 200 && resp.status < 300) || resp.status === 405) resolve();
-            else reject(new Error(`WebDAV MKCOL failed: ${resp.status} ${resp.statusText}`));
-          },
-          onerror: reject,
-          ontimeout: () => reject(new Error('WebDAV MKCOL timeout')),
-        });
-      });
+      const resp = await webDAVRequest('MKCOL', url, cfg);
+      if (!((resp.status >= 200 && resp.status < 300) || resp.status === 405)) {
+        throw new Error(`WebDAV MKCOL failed: ${resp.status} ${resp.statusText}`);
+      }
     }
+  }
+
+  async function verifyWebDAVUpload(url, cfg, expectedText) {
+    const expectedSize = new Blob([expectedText]).size;
+    const headResp = await webDAVRequest('HEAD', url, cfg).catch(() => null);
+    if (headResp && headResp.status >= 200 && headResp.status < 300) {
+      const sizeHeader = headResp.responseHeaders?.match(/^content-length:\s*(\d+)/im)?.[1];
+      const remoteSize = sizeHeader ? Number(sizeHeader) : null;
+      return {
+        method: 'HEAD',
+        status: headResp.status,
+        remoteSize,
+        expectedSize,
+        sizeMatched: remoteSize === null || remoteSize === expectedSize,
+      };
+    }
+
+    const getResp = await webDAVRequest('GET', url, cfg);
+    if (!(getResp.status >= 200 && getResp.status < 300)) {
+      throw new Error(`WebDAV 上传后校验失败：GET ${getResp.status} ${getResp.statusText}`);
+    }
+    const remoteText = getResp.responseText || '';
+    const remoteSize = new Blob([remoteText]).size;
+    if (remoteSize !== expectedSize) {
+      throw new Error(`WebDAV 上传后校验失败：远端大小 ${remoteSize}，本地大小 ${expectedSize}`);
+    }
+    return {
+      method: 'GET',
+      status: getResp.status,
+      remoteSize,
+      expectedSize,
+      sizeMatched: true,
+    };
+  }
+
+  async function testWebDAVConfig(cfg) {
+    await ensureWebDAVDirectory(cfg);
+    const serverBase = cfg.serverUrl.replace(/\/$/, '');
+    const backupPath = (cfg.backupPath || '/').replace(/\/$/, '');
+    const testName = `.nsdf_webdav_test_${site.id}_${Date.now()}.txt`;
+    const path = `${backupPath}/${testName}`;
+    const url = `${serverBase}${path.startsWith('/') ? path : '/' + path}`;
+    const text = `ns-df webdav test ${site.id} ${new Date().toISOString()}`;
+    const putResp = await webDAVRequest('PUT', url, cfg, {
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      data: text,
+    });
+    if (!(putResp.status >= 200 && putResp.status < 300)) {
+      throw new Error(`WebDAV 测试上传失败：PUT ${putResp.status} ${putResp.statusText}`);
+    }
+    const verify = await verifyWebDAVUpload(url, cfg, text);
+    await webDAVRequest('DELETE', url, cfg).catch(() => null);
+    return { url, verify };
   }
 
   async function backupToWebDAV() {
@@ -632,24 +692,19 @@
     const fileName = `${site.id}_chat_full_history_${currentUserId}_${Date.now()}.json`;
     const path = `${cfg.backupPath.replace(/\/$/, '')}/${fileName}`;
     const url = `${cfg.serverUrl.replace(/\/$/, '')}${path.startsWith('/') ? path : '/' + path}`;
-    await Utils.retry(() => new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: 'PUT',
-        url,
-        headers: {
-          Authorization: Utils.basicAuth(cfg.username, cfg.password),
-          'Content-Type': 'application/json',
-        },
-        data: JSON.stringify(payload),
-        onload: (resp) => {
-          if (resp.status >= 200 && resp.status < 300) resolve();
-          else reject(new Error(`WebDAV PUT failed: ${resp.status} ${resp.statusText}`));
-        },
-        onerror: reject,
-        ontimeout: () => reject(new Error('WebDAV timeout')),
+    const body = JSON.stringify(payload);
+    await Utils.retry(async () => {
+      const resp = await webDAVRequest('PUT', url, cfg, {
+        headers: { 'Content-Type': 'application/json' },
+        data: body,
       });
-    }), { retries: 3, baseDelay: 1500 });
-    alert(`WebDAV 备份完成\n${url}`);
+      if (!(resp.status >= 200 && resp.status < 300)) {
+        throw new Error(`WebDAV PUT failed: ${resp.status} ${resp.statusText}`);
+      }
+    }, { retries: 3, baseDelay: 1500 });
+    const verify = await verifyWebDAVUpload(url, cfg, body);
+    const sizeTip = verify.remoteSize === null ? `${verify.expectedSize} bytes` : `${verify.remoteSize}/${verify.expectedSize} bytes`;
+    alert(`WebDAV 备份完成，并已验证远端文件存在\n校验方式：${verify.method} ${verify.status}\n大小：${sizeTip}\n${url}`);
   }
 
   async function configureAutoBackup() {
@@ -753,6 +808,7 @@
           <div class="nsdf-webdav-actions">
             <div class="nsdf-webdav-actions-left">
               <button class="nsdf-webdav-btn ghost" data-act="run-sync">立即执行一次增量同步</button>
+              <button class="nsdf-webdav-btn secondary" data-act="test-webdav">测试 WebDAV 是否正确</button>
             </div>
             <div class="nsdf-webdav-actions-right">
               <button class="nsdf-webdav-btn secondary" data-act="cancel">取消</button>
@@ -783,6 +839,33 @@
           cleanup(true);
         } catch (e) {
           alert(`增量同步失败: ${e.message}`);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = originalText;
+        }
+      };
+      modal.querySelector('[data-act="test-webdav"]').onclick = async () => {
+        const btn = modal.querySelector('[data-act="test-webdav"]');
+        const originalText = btn.textContent;
+        const cfg = {
+          serverUrl: modal.querySelector('[data-role="serverUrl"]').value.trim(),
+          username: modal.querySelector('[data-role="username"]').value.trim(),
+          password: modal.querySelector('[data-role="password"]').value,
+          backupPath: modal.querySelector('[data-role="backupPath"]').value.trim() || '/ns_df_messages_backup/',
+        };
+        if (!cfg.serverUrl || !cfg.username || !cfg.password) {
+          alert('请先填完整 WebDAV：服务器地址、用户名、密码');
+          return;
+        }
+        btn.disabled = true;
+        btn.textContent = '正在测试...';
+        try {
+          const result = await testWebDAVConfig(cfg);
+          const v = result.verify;
+          const sizeTip = v.remoteSize === null ? `${v.expectedSize} bytes` : `${v.remoteSize}/${v.expectedSize} bytes`;
+          alert(`WebDAV 测试通过：可以创建目录、上传文件，并验证远端可访问\n校验方式：${v.method} ${v.status}\n大小：${sizeTip}\n测试文件：${result.url}\n测试文件已尝试删除`);
+        } catch (e) {
+          alert(`WebDAV 测试失败：${e.message}\n\n说明：如果这里失败，就不要相信“备份完成”。请检查 WebDAV 地址、账号密码、路径权限，或后端是否有缓存/重定向。`);
         } finally {
           btn.disabled = false;
           btn.textContent = originalText;
