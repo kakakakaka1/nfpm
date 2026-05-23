@@ -605,14 +605,30 @@
     });
   }
 
+  function encodeWebDAVPath(path) {
+    const normalized = String(path || '/').trim() || '/';
+    const hasTrailingSlash = normalized.endsWith('/');
+    const encoded = normalized
+      .split('/')
+      .filter(Boolean)
+      .map((seg) => encodeURIComponent(decodeURIComponent(seg)))
+      .join('/');
+    return `/${encoded}${hasTrailingSlash && encoded ? '/' : ''}`;
+  }
+
+  function joinWebDAVUrl(serverUrl, path) {
+    const serverBase = serverUrl.replace(/\/$/, '');
+    const encodedPath = encodeWebDAVPath(path);
+    return `${serverBase}${encodedPath}`;
+  }
+
   async function ensureWebDAVDirectory(cfg) {
-    const serverBase = cfg.serverUrl.replace(/\/$/, '');
     const normalized = (cfg.backupPath || '/').replace(/\/+$/, '');
     const segments = normalized.split('/').filter(Boolean);
     let current = '';
     for (const seg of segments) {
       current += '/' + seg;
-      const url = `${serverBase}${current}/`;
+      const url = joinWebDAVUrl(cfg.serverUrl, `${current}/`);
       const resp = await webDAVRequest('MKCOL', url, cfg);
       if (!((resp.status >= 200 && resp.status < 300) || resp.status === 405)) {
         throw new Error(`WebDAV MKCOL failed: ${resp.status} ${resp.statusText}`);
@@ -655,11 +671,10 @@
 
   async function testWebDAVConfig(cfg) {
     await ensureWebDAVDirectory(cfg);
-    const serverBase = cfg.serverUrl.replace(/\/$/, '');
     const backupPath = (cfg.backupPath || '/').replace(/\/$/, '');
     const testName = `.nsdf_webdav_test_${site.id}_${Date.now()}.txt`;
     const path = `${backupPath}/${testName}`;
-    const url = `${serverBase}${path.startsWith('/') ? path : '/' + path}`;
+    const url = joinWebDAVUrl(cfg.serverUrl, path);
     const text = `ns-df webdav test ${site.id} ${new Date().toISOString()}`;
     const putResp = await webDAVRequest('PUT', url, cfg, {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -691,7 +706,7 @@
     const payload = buildHistoryPayload(currentUserId, data);
     const fileName = `${site.id}_chat_full_history_${currentUserId}_${Date.now()}.json`;
     const path = `${cfg.backupPath.replace(/\/$/, '')}/${fileName}`;
-    const url = `${cfg.serverUrl.replace(/\/$/, '')}${path.startsWith('/') ? path : '/' + path}`;
+    const url = joinWebDAVUrl(cfg.serverUrl, path);
     const body = JSON.stringify(payload);
     await Utils.retry(async () => {
       const resp = await webDAVRequest('PUT', url, cfg, {
